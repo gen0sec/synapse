@@ -2,7 +2,7 @@ use crate::utils::structs::{InnerMap, UpstreamsDashMap, UpstreamsIdMap};
 use crate::utils::tls;
 use crate::utils::tls::CertificateConfig;
 use dashmap::DashMap;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use notify::{event::ModifyKind, Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use port_check::is_port_reachable;
 use privdrop::PrivDrop;
@@ -184,24 +184,34 @@ pub fn listdir(dir: String) -> Vec<tls::CertificateConfig> {
         let path_str = path.unwrap().path().to_str().unwrap().to_owned();
         if path_str.ends_with(".crt") {
             let name = path_str.replace(".crt", "");
-            let mut inner = vec![];
-            let domain = name.split("/").collect::<Vec<&str>>();
-            inner.push(name.clone() + ".crt");
-            inner.push(name.clone() + ".key");
-            f.insert(domain[domain.len() - 1].to_owned(), inner);
-            let y = CertificateConfig {
-                cert_path: name.clone() + ".crt",
-                key_path: name.clone() + ".key",
-            };
-            certificate_configs.push(y);
+            let key_path = name.clone() + ".key";
+            // Only add certificate config if both cert and key files exist
+            // This prevents errors when .crt is created before .key during certificate writing
+            if std::path::Path::new(&key_path).exists() {
+                let mut inner = vec![];
+                let domain = name.split("/").collect::<Vec<&str>>();
+                inner.push(name.clone() + ".crt");
+                inner.push(key_path.clone());
+                f.insert(domain[domain.len() - 1].to_owned(), inner);
+                let y = CertificateConfig {
+                    cert_path: name.clone() + ".crt",
+                    key_path: key_path,
+                };
+                certificate_configs.push(y);
+            } else {
+                debug!("Skipping certificate {} - key file does not exist yet", name);
+            }
         }
     }
     for (_, v) in f.iter() {
-        let y = CertificateConfig {
-            cert_path: v[0].clone(),
-            key_path: v[1].clone(),
-        };
-        certificate_configs.push(y);
+        // Double-check both files exist before adding
+        if std::path::Path::new(&v[0]).exists() && std::path::Path::new(&v[1]).exists() {
+            let y = CertificateConfig {
+                cert_path: v[0].clone(),
+                key_path: v[1].clone(),
+            };
+            certificate_configs.push(y);
+        }
     }
     certificate_configs
 }
@@ -220,6 +230,9 @@ pub fn watch_folder(path: String, sender: Sender<Vec<CertificateConfig>>) -> not
                 EventKind::Modify(ModifyKind::Data(_)) | EventKind::Create(_) | EventKind::Remove(_) => {
                     if start.elapsed() > Duration::from_secs(1) {
                         start = Instant::now();
+                        // Add a small delay to allow both .crt and .key files to be written
+                        // This prevents race conditions when certificates are being saved
+                        thread::sleep(Duration::from_millis(100));
                         let certificate_configs = listdir(path.clone());
                         sender.send(certificate_configs)?;
                         info!("Certificate changed: {:?}, {:?}", event.kind, event.paths);

@@ -205,12 +205,30 @@ async fn async_main(_args: Args, config: Config) -> Result<()> {
                             continue;
                         }
                     };
-                    if let Err(e) = bpf_attach_to_xdp(&mut skel, ifindex, Some(iface.as_str())) {
+                    if let Err(e) = bpf_attach_to_xdp(&mut skel, ifindex, Some(iface.as_str()), &config.network.ip_version) {
                         // Check if error is EAFNOSUPPORT (error 97) - IPv6 might be disabled
                         let error_str = e.to_string();
                         if error_str.contains("97") || error_str.contains("Address family not supported") {
-                            log::error!("Failed to attach XDP to '{}': {} (IPv6 may be disabled)", iface, e);
-                            log::info!("Hint: XDP requires IPv6 kernel support. Try 'sysctl -w net.ipv6.conf.{}.disable_ipv6=0' or set 'disable_xdp: true' in config.yaml", iface);
+                            match config.network.ip_version.as_str() {
+                                "ipv4" => {
+                                    log::warn!("Failed to attach XDP to '{}': {} (IPv6 disabled)", iface, e);
+                                    log::info!("IPv4-only mode: XDP requires IPv6 to be enabled at kernel level for attachment (kernel limitation), even when processing only IPv4 packets.");
+                                    log::info!("Options:");
+                                    log::info!("  1. Enable IPv6 for interface: sysctl -w net.ipv6.conf.{}.disable_ipv6=0", iface);
+                                    log::info!("  2. Set ip_version to 'both' in config.yaml to enable IPv6 support");
+                                    log::info!("  3. Set disable_xdp: true in config.yaml to skip XDP (reduces packet filtering capabilities)");
+                                    log::warn!("Continuing without XDP on interface '{}' - packet filtering will be limited", iface);
+                                }
+                                "ipv6" => {
+                                    log::error!("Failed to attach XDP to '{}': {} (IPv6 disabled)", iface, e);
+                                    log::info!("IPv6-only mode: IPv6 must be enabled for XDP attachment.");
+                                    log::info!("Enable IPv6: sysctl -w net.ipv6.conf.{}.disable_ipv6=0", iface);
+                                }
+                                _ => {
+                                    log::error!("Failed to attach XDP to '{}': {} (IPv6 may be disabled)", iface, e);
+                                    log::info!("XDP requires IPv6 kernel support. Try 'sysctl -w net.ipv6.conf.{}.disable_ipv6=0' or set 'disable_xdp: true' in config.yaml", iface);
+                                }
+                            }
                         } else {
                             log::error!("Failed to attach XDP to '{}': {}", iface, e);
                         }

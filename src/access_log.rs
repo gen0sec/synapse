@@ -924,4 +924,286 @@ mod tests {
         assert_eq!(summary.upstream.as_ref().unwrap().selected, "backend1");
         assert_eq!(summary.performance.request_time_ms, Some(50));
     }
+
+    #[test]
+    fn test_remediation_with_threat_intelligence() {
+        use crate::waf::wirefilter::{WafAction, WafResult};
+        use crate::threat::{ThreatResponse, ThreatIntel, ThreatContext, GeoInfo};
+
+        // Create a mock threat response
+        let threat_response = ThreatResponse {
+            schema_version: "1.0.0".to_string(),
+            tenant_id: "test-tenant".to_string(),
+            ip: "192.168.1.100".to_string(),
+            intel: ThreatIntel {
+                score: 85,
+                confidence: 0.95,
+                score_version: "1.0".to_string(),
+                categories: vec!["malware".to_string(), "botnet".to_string()],
+                tags: vec!["suspicious".to_string()],
+                first_seen: Some(Utc::now()),
+                last_seen: Some(Utc::now()),
+                source_count: 5,
+                reason_code: "THREAT_DETECTED".to_string(),
+                reason_summary: "IP address associated with malicious activity".to_string(),
+                rule_id: "rule-123".to_string(),
+            },
+            context: ThreatContext {
+                asn: 12345,
+                org: "Test ISP".to_string(),
+                ip_version: 4,
+                geo: GeoInfo {
+                    country: "United States".to_string(),
+                    iso_code: "US".to_string(),
+                    asn_iso_code: "US".to_string(),
+                },
+            },
+            advice: "Block this IP address".to_string(),
+            ttl_s: 3600,
+            generated_at: Utc::now(),
+        };
+
+        // Create a WAF result with threat intelligence
+        let waf_result = WafResult {
+            action: WafAction::Block,
+            rule_name: "Threat intelligence - Block".to_string(),
+            rule_id: "aa0880fd-4d3a-41a6-a02b-9b8b83ca615a".to_string(),
+            rate_limit_config: None,
+            threat_response: Some(threat_response.clone()),
+        };
+
+        // Test create_remediation_details with threat intelligence
+        let remediation = HttpAccessLog::create_remediation_details(
+            Some(&waf_result),
+            Some(&threat_response),
+        );
+
+        assert!(remediation.is_some());
+        let remediation = remediation.unwrap();
+
+        // Verify WAF data
+        assert_eq!(remediation.waf_action, Some("block".to_string()));
+        assert_eq!(remediation.waf_rule_id, Some("aa0880fd-4d3a-41a6-a02b-9b8b83ca615a".to_string()));
+        assert_eq!(remediation.waf_rule_name, Some("Threat intelligence - Block".to_string()));
+
+        // Verify threat intelligence data
+        assert_eq!(remediation.threat_score, Some(85));
+        assert_eq!(remediation.threat_confidence, Some(0.95));
+        assert_eq!(remediation.threat_categories, Some(vec!["malware".to_string(), "botnet".to_string()]));
+        assert_eq!(remediation.threat_tags, Some(vec!["suspicious".to_string()]));
+        assert_eq!(remediation.threat_reason_code, Some("THREAT_DETECTED".to_string()));
+        assert_eq!(remediation.threat_reason_summary, Some("IP address associated with malicious activity".to_string()));
+        assert_eq!(remediation.threat_advice, Some("Block this IP address".to_string()));
+        assert_eq!(remediation.ip_country, Some("US".to_string()));
+        assert_eq!(remediation.ip_asn, Some(12345));
+        assert_eq!(remediation.ip_asn_org, Some("Test ISP".to_string()));
+        assert_eq!(remediation.ip_asn_country, Some("US".to_string()));
+    }
+
+    #[test]
+    fn test_remediation_with_waf_challenge_and_threat_intelligence() {
+        use crate::waf::wirefilter::{WafAction, WafResult};
+        use crate::threat::{ThreatResponse, ThreatIntel, ThreatContext, GeoInfo};
+
+        // Create a mock threat response
+        let threat_response = ThreatResponse {
+            schema_version: "1.0.0".to_string(),
+            tenant_id: "test-tenant".to_string(),
+            ip: "10.0.0.1".to_string(),
+            intel: ThreatIntel {
+                score: 60,
+                confidence: 0.75,
+                score_version: "1.0".to_string(),
+                categories: vec!["suspicious".to_string()],
+                tags: vec!["review".to_string()],
+                first_seen: Some(Utc::now()),
+                last_seen: Some(Utc::now()),
+                source_count: 2,
+                reason_code: "SUSPICIOUS_ACTIVITY".to_string(),
+                reason_summary: "Unusual traffic patterns detected".to_string(),
+                rule_id: "rule-456".to_string(),
+            },
+            context: ThreatContext {
+                asn: 67890,
+                org: "Another ISP".to_string(),
+                ip_version: 4,
+                geo: GeoInfo {
+                    country: "Canada".to_string(),
+                    iso_code: "CA".to_string(),
+                    asn_iso_code: "CA".to_string(),
+                },
+            },
+            advice: "Challenge with CAPTCHA".to_string(),
+            ttl_s: 1800,
+            generated_at: Utc::now(),
+        };
+
+        // Create a WAF result with challenge action and threat intelligence
+        let waf_result = WafResult {
+            action: WafAction::Challenge,
+            rule_name: "Threat intelligence - Challenge".to_string(),
+            rule_id: "1eb12716-6e13-4e23-a1d9-c879f6175317".to_string(),
+            rate_limit_config: None,
+            threat_response: Some(threat_response.clone()),
+        };
+
+        // Test create_remediation_details with challenge action and threat intelligence
+        let remediation = HttpAccessLog::create_remediation_details(
+            Some(&waf_result),
+            Some(&threat_response),
+        );
+
+        assert!(remediation.is_some());
+        let remediation = remediation.unwrap();
+
+        // Verify WAF data (challenge should be included in remediation)
+        assert_eq!(remediation.waf_action, Some("challenge".to_string()));
+        assert_eq!(remediation.waf_rule_id, Some("1eb12716-6e13-4e23-a1d9-c879f6175317".to_string()));
+        assert_eq!(remediation.waf_rule_name, Some("Threat intelligence - Challenge".to_string()));
+
+        // Verify threat intelligence data
+        assert_eq!(remediation.threat_score, Some(60));
+        assert_eq!(remediation.threat_confidence, Some(0.75));
+        assert_eq!(remediation.threat_categories, Some(vec!["suspicious".to_string()]));
+        assert_eq!(remediation.ip_country, Some("CA".to_string()));
+        assert_eq!(remediation.ip_asn, Some(67890));
+    }
+
+    #[test]
+    fn test_remediation_without_threat_intelligence() {
+        use crate::waf::wirefilter::{WafAction, WafResult};
+
+        // Create a WAF result without threat intelligence
+        let waf_result = WafResult {
+            action: WafAction::Block,
+            rule_name: "Custom Rule".to_string(),
+            rule_id: "custom-rule-123".to_string(),
+            rate_limit_config: None,
+            threat_response: None,
+        };
+
+        // Test create_remediation_details without threat intelligence
+        let remediation = HttpAccessLog::create_remediation_details(
+            Some(&waf_result),
+            None,
+        );
+
+        assert!(remediation.is_some());
+        let remediation = remediation.unwrap();
+
+        // Verify WAF data is present
+        assert_eq!(remediation.waf_action, Some("block".to_string()));
+        assert_eq!(remediation.waf_rule_id, Some("custom-rule-123".to_string()));
+
+        // Verify threat intelligence data is null
+        assert_eq!(remediation.threat_score, None);
+        assert_eq!(remediation.threat_confidence, None);
+        assert_eq!(remediation.threat_categories, None);
+        assert_eq!(remediation.ip_country, None);
+        assert_eq!(remediation.ip_asn, None);
+    }
+
+    #[test]
+    fn test_remediation_json_serialization_with_threat_intelligence() {
+        use crate::waf::wirefilter::{WafAction, WafResult};
+        use crate::threat::{ThreatResponse, ThreatIntel, ThreatContext, GeoInfo};
+
+        // Create a mock threat response
+        let threat_response = ThreatResponse {
+            schema_version: "1.0.0".to_string(),
+            tenant_id: "test-tenant".to_string(),
+            ip: "192.168.1.100".to_string(),
+            intel: ThreatIntel {
+                score: 90,
+                confidence: 0.98,
+                score_version: "1.0".to_string(),
+                categories: vec!["malware".to_string()],
+                tags: vec!["critical".to_string()],
+                first_seen: Some(Utc::now()),
+                last_seen: Some(Utc::now()),
+                source_count: 10,
+                reason_code: "MALWARE_DETECTED".to_string(),
+                reason_summary: "Known malware source".to_string(),
+                rule_id: "rule-789".to_string(),
+            },
+            context: ThreatContext {
+                asn: 99999,
+                org: "Malicious Network".to_string(),
+                ip_version: 4,
+                geo: GeoInfo {
+                    country: "Unknown".to_string(),
+                    iso_code: "XX".to_string(),
+                    asn_iso_code: "XX".to_string(),
+                },
+            },
+            advice: "Immediate block required".to_string(),
+            ttl_s: 7200,
+            generated_at: Utc::now(),
+        };
+
+        let waf_result = WafResult {
+            action: WafAction::Block,
+            rule_name: "Threat intelligence - Block".to_string(),
+            rule_id: "test-rule-id".to_string(),
+            rate_limit_config: None,
+            threat_response: Some(threat_response.clone()),
+        };
+
+        let remediation = HttpAccessLog::create_remediation_details(
+            Some(&waf_result),
+            Some(&threat_response),
+        ).unwrap();
+
+        // Create a full access log with remediation
+        let access_log = HttpAccessLog {
+            event_type: "http_access_log".to_string(),
+            schema_version: "1.0.0".to_string(),
+            timestamp: Utc::now(),
+            request_id: "test_req_123".to_string(),
+            http: HttpDetails {
+                method: "GET".to_string(),
+                scheme: "https".to_string(),
+                host: "example.com".to_string(),
+                port: 443,
+                path: "/".to_string(),
+                query: "".to_string(),
+                query_hash: None,
+                headers: HashMap::new(),
+                ja4h: None,
+                user_agent: None,
+                content_type: None,
+                content_length: None,
+                body: "".to_string(),
+                body_sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string(),
+                body_truncated: false,
+            },
+            network: NetworkDetails {
+                src_ip: "192.168.1.100".to_string(),
+                src_port: 12345,
+                dst_ip: "10.0.0.1".to_string(),
+                dst_port: 443,
+            },
+            tls: None,
+            response: ResponseDetails {
+                status: 403,
+                status_text: "Forbidden".to_string(),
+                content_type: None,
+                content_length: None,
+                body: "".to_string(),
+            },
+            remediation: Some(remediation),
+            upstream: None,
+            performance: None,
+        };
+
+        // Serialize to JSON and verify threat intelligence fields are present
+        let json = access_log.to_json().unwrap();
+        assert!(json.contains("\"threat_score\":90"));
+        assert!(json.contains("\"threat_confidence\":0.98"));
+        assert!(json.contains("\"threat_categories\":[\"malware\"]"));
+        assert!(json.contains("\"ip_country\":\"XX\""));
+        assert!(json.contains("\"ip_asn\":99999"));
+        assert!(json.contains("\"threat_reason_code\":\"MALWARE_DETECTED\""));
+        assert!(json.contains("\"threat_reason_summary\":\"Known malware source\""));
+    }
 }
