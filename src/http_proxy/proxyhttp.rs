@@ -102,12 +102,37 @@ impl ProxyHttp for LB {
             }
         }
 
+        // Get threat intelligence data BEFORE WAF evaluation
+        // This ensures threat intelligence is available in access logs even when WAF blocks/challenges early
+        if let Some(peer_addr) = session.client_addr().and_then(|addr| addr.as_inet()) {
+            if _ctx.threat_data.is_none() {
+                match crate::threat::get_threat_intel(&peer_addr.ip().to_string()).await {
+                    Ok(Some(threat_response)) => {
+                        _ctx.threat_data = Some(threat_response);
+                        debug!("Threat intelligence retrieved for IP: {}", peer_addr.ip());
+                    }
+                    Ok(None) => {
+                        debug!("No threat intelligence data for IP: {}", peer_addr.ip());
+                    }
+                    Err(e) => {
+                        debug!("Threat intelligence error for IP {}: {}", peer_addr.ip(), e);
+                    }
+                }
+            }
+        }
+
         // Evaluate WAF rules
         if let Some(peer_addr) = session.client_addr().and_then(|addr| addr.as_inet()) {
             let socket_addr = std::net::SocketAddr::new(peer_addr.ip(), peer_addr.port());
             match evaluate_waf_for_pingora_request(session.req_header(), b"", socket_addr).await {
                 Ok(Some(waf_result)) => {
                     debug!("WAF rule matched: rule={}, id={}, action={:?}", waf_result.rule_name, waf_result.rule_id, waf_result.action);
+
+                    // Store threat response from WAF result if available (WAF already fetched it)
+                    if let Some(threat_resp) = waf_result.threat_response.clone() {
+                        _ctx.threat_data = Some(threat_resp);
+                        debug!("Threat intelligence retrieved from WAF evaluation for IP: {}", peer_addr.ip());
+                    }
 
                     // Store WAF result in context for access logging
                     _ctx.waf_result = Some(waf_result.clone());
@@ -257,7 +282,7 @@ impl ProxyHttp for LB {
                                 let rate_limiter = WAF_RATE_LIMITERS
                                     .entry(waf_result.rule_id.clone())
                                     .or_insert_with(|| {
-                                        info!("Creating new rate limiter for rule {}: {} requests per {} seconds",
+                                        debug!("Creating new rate limiter for rule {}: {} requests per {} seconds",
                                             waf_result.rule_id, requests_limit, period_secs);
                                         Arc::new(Rate::new(Duration::from_secs(period_secs)))
                                     })
@@ -311,24 +336,6 @@ impl ProxyHttp for LB {
                 Err(e) => {
                     error!("WAF evaluation error: {}", e);
                     // On error, allow request to continue (fail open)
-                }
-            }
-
-            // Get threat intelligence data
-            if _ctx.threat_data.is_none() {
-                if let Some(peer_addr) = session.client_addr().and_then(|addr| addr.as_inet()) {
-                    match crate::threat::get_threat_intel(&peer_addr.ip().to_string()).await {
-                        Ok(Some(threat_response)) => {
-                            _ctx.threat_data = Some(threat_response);
-                            debug!("Threat intelligence retrieved for IP: {}", peer_addr.ip());
-                        }
-                        Ok(None) => {
-                            debug!("No threat intelligence data for IP: {}", peer_addr.ip());
-                        }
-                        Err(e) => {
-                            debug!("Threat intelligence error for IP {}: {}", peer_addr.ip(), e);
-                        }
-                    }
                 }
             }
         } else {

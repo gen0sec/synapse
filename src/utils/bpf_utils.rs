@@ -39,6 +39,7 @@ pub fn bpf_attach_to_xdp(
     skel: &mut FilterSkel<'_>,
     ifindex: i32,
     iface_name: Option<&str>,
+    ip_version: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Try hardware mode first, fall back to driver mode if not supported
     let xdp = Xdp::new(skel.progs.arxignis_xdp_filter.as_fd().into());
@@ -102,6 +103,14 @@ pub fn bpf_attach_to_xdp(
             if error_msg.contains("97") || error_msg.contains("Address family not supported") {
                 log::debug!("SKB mode failed with EAFNOSUPPORT, IPv6 might be disabled");
 
+                // Note: XDP requires IPv6 to be enabled at the kernel level for attachment,
+                // even when processing only IPv4 packets. This is a kernel limitation.
+                // For IPv4-only mode, we can enable IPv6 just for this interface (not system-wide)
+                // which allows XDP to attach while still operating in IPv4-only mode.
+                if ip_version == "ipv4" {
+                    log::info!("IPv4-only mode: Attempting to enable IPv6 on interface for XDP attachment (kernel requirement)");
+                }
+
                 // Try to enable IPv6 only for this specific interface (not system-wide)
                 // This allows IPv4-only operation elsewhere while enabling XDP on this interface
                 if let Some(iface) = iface_name {
@@ -111,7 +120,11 @@ pub fn bpf_attach_to_xdp(
                         // Retry SKB mode after enabling IPv6 for the interface
                         match xdp.attach(ifindex, XdpFlags::SKB_MODE) {
                             Ok(()) => {
-                                log::info!("XDP program attached in generic SKB mode (IPv6 enabled for interface {})", iface);
+                                if ip_version == "ipv4" {
+                                    log::info!("XDP program attached in generic SKB mode (IPv6 enabled on interface {} for kernel compatibility, processing IPv4 only)", iface);
+                                } else {
+                                    log::info!("XDP program attached in generic SKB mode (IPv6 enabled for interface {})", iface);
+                                }
                                 return Ok(());
                             }
                             Err(e2) => {

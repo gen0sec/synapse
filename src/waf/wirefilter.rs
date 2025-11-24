@@ -35,6 +35,7 @@ pub struct WafResult {
     pub rule_name: String,
     pub rule_id: String,
     pub rate_limit_config: Option<crate::worker::config::RateLimitConfig>,
+    pub threat_response: Option<crate::threat::ThreatResponse>,
 }
 
 /// Wirefilter-based HTTP request filtering engine
@@ -194,7 +195,7 @@ impl HttpFilter {
                 rule.config.as_ref().and_then(|cfg| {
                     match crate::worker::config::RateLimitConfig::from_json(cfg) {
                         Ok(config) => {
-                            log::info!("Parsed rate limit config for rule {}: period={}, requests={}",
+                            log::debug!("Parsed rate limit config for rule {}: period={}, requests={}",
                                 rule.id, config.period, config.requests);
                             Some(config)
                         }
@@ -260,7 +261,7 @@ impl HttpFilter {
                 rule.config.as_ref().and_then(|cfg| {
                     match crate::worker::config::RateLimitConfig::from_json(cfg) {
                         Ok(config) => {
-                            log::info!("Parsed rate limit config for rule {}: period={}, requests={}",
+                            log::debug!("Parsed rate limit config for rule {}: period={}, requests={}",
                                 rule.id, config.period, config.requests);
                             Some(config)
                         }
@@ -430,92 +431,63 @@ impl HttpFilter {
         )?;
 
         // Fetch threat intelligence data for the source IP
-        let _threat_fields = match threat::get_waf_fields(&peer_addr.ip().to_string()).await {
-            Ok(Some(waf_fields)) => {
-                // Set threat intelligence fields
-                ctx.set_field_value(
-                    self.scheme.get_field("ip.src.country").unwrap(),
-                    waf_fields.ip_src_country.clone(),
-                )?;
-                ctx.set_field_value(
-                    self.scheme.get_field("ip.src.asn").unwrap(),
-                    waf_fields.ip_src_asn as i64,
-                )?;
-                ctx.set_field_value(
-                    self.scheme.get_field("ip.src.asn_org").unwrap(),
-                    waf_fields.ip_src_asn_org.clone(),
-                )?;
-                ctx.set_field_value(
-                    self.scheme.get_field("ip.src.asn_country").unwrap(),
-                    waf_fields.ip_src_asn_country.clone(),
-                )?;
-                ctx.set_field_value(
-                    self.scheme.get_field("threat.score").unwrap(),
-                    waf_fields.threat_score as i64,
-                )?;
-                ctx.set_field_value(
-                    self.scheme.get_field("threat.advice").unwrap(),
-                    waf_fields.threat_advice.clone(),
-                )?;
-                Some(waf_fields)
-            }
-            Ok(None) => {
-                // No threat data found, set default values
-                ctx.set_field_value(
-                    self.scheme.get_field("ip.src.country").unwrap(),
-                    "",
-                )?;
-                ctx.set_field_value(
-                    self.scheme.get_field("ip.src.asn").unwrap(),
-                    0i64,
-                )?;
-                ctx.set_field_value(
-                    self.scheme.get_field("ip.src.asn_org").unwrap(),
-                    "",
-                )?;
-                ctx.set_field_value(
-                    self.scheme.get_field("ip.src.asn_country").unwrap(),
-                    "",
-                )?;
-                ctx.set_field_value(
-                    self.scheme.get_field("threat.score").unwrap(),
-                    0i64,
-                )?;
-                ctx.set_field_value(
-                    self.scheme.get_field("threat.advice").unwrap(),
-                    "",
-                )?;
-                None
-            }
-            Err(e) => {
-                log::warn!("Failed to fetch threat intelligence for {}: {}", peer_addr.ip(), e);
-                // Set default values on error
-                ctx.set_field_value(
-                    self.scheme.get_field("ip.src.country").unwrap(),
-                    "",
-                )?;
-                ctx.set_field_value(
-                    self.scheme.get_field("ip.src.asn").unwrap(),
-                    0i64,
-                )?;
-                ctx.set_field_value(
-                    self.scheme.get_field("ip.src.asn_org").unwrap(),
-                    "",
-                )?;
-                ctx.set_field_value(
-                    self.scheme.get_field("ip.src.asn_country").unwrap(),
-                    "",
-                )?;
-                ctx.set_field_value(
-                    self.scheme.get_field("threat.score").unwrap(),
-                    0i64,
-                )?;
-                ctx.set_field_value(
-                    self.scheme.get_field("threat.advice").unwrap(),
-                    "",
-                )?;
-                None
-            }
+        // Fetch full threat response for access logging, and WAF fields for rule evaluation
+        let threat_response = threat::get_threat_intel(&peer_addr.ip().to_string()).await.ok().flatten();
+        let _threat_fields = if let Some(ref threat_resp) = threat_response {
+            let waf_fields = threat::WafFields::from(threat_resp);
+            // Set threat intelligence fields
+            ctx.set_field_value(
+                self.scheme.get_field("ip.src.country").unwrap(),
+                waf_fields.ip_src_country.clone(),
+            )?;
+            ctx.set_field_value(
+                self.scheme.get_field("ip.src.asn").unwrap(),
+                waf_fields.ip_src_asn as i64,
+            )?;
+            ctx.set_field_value(
+                self.scheme.get_field("ip.src.asn_org").unwrap(),
+                waf_fields.ip_src_asn_org.clone(),
+            )?;
+            ctx.set_field_value(
+                self.scheme.get_field("ip.src.asn_country").unwrap(),
+                waf_fields.ip_src_asn_country.clone(),
+            )?;
+            ctx.set_field_value(
+                self.scheme.get_field("threat.score").unwrap(),
+                waf_fields.threat_score as i64,
+            )?;
+            ctx.set_field_value(
+                self.scheme.get_field("threat.advice").unwrap(),
+                waf_fields.threat_advice.clone(),
+            )?;
+            Some(waf_fields)
+        } else {
+            // No threat data found, set default values
+            ctx.set_field_value(
+                self.scheme.get_field("ip.src.country").unwrap(),
+                "",
+            )?;
+            ctx.set_field_value(
+                self.scheme.get_field("ip.src.asn").unwrap(),
+                0i64,
+            )?;
+            ctx.set_field_value(
+                self.scheme.get_field("ip.src.asn_org").unwrap(),
+                "",
+            )?;
+            ctx.set_field_value(
+                self.scheme.get_field("ip.src.asn_country").unwrap(),
+                "",
+            )?;
+            ctx.set_field_value(
+                self.scheme.get_field("threat.score").unwrap(),
+                0i64,
+            )?;
+            ctx.set_field_value(
+                self.scheme.get_field("threat.advice").unwrap(),
+                "",
+            )?;
+            None
         };
 
         // Extract HTTP version
@@ -686,6 +658,7 @@ impl HttpFilter {
                     rule_name: rule_name.clone(),
                     rule_id: rule_id.clone(),
                     rate_limit_config: rate_limit_config.clone(),
+                    threat_response: threat_response.clone(),
                 }));
             }
         }
