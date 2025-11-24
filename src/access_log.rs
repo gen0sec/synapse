@@ -553,14 +553,33 @@ impl HttpAccessLog {
         waf_result: Option<&crate::waf::wirefilter::WafResult>,
         threat_data: Option<&crate::threat::ThreatResponse>,
     ) -> Option<RemediationDetails> {
-        // Check if we have any data that requires remediation
-        let has_remediation_data = match waf_result {
-            Some(waf) => matches!(waf.action, crate::waf::wirefilter::WafAction::Block | crate::waf::wirefilter::WafAction::Challenge),
+        // Check if WAF action requires remediation (Block/Challenge/RateLimit) - these will populate WAF fields
+        // RateLimit is included because it blocks requests when the limit is exceeded
+        let has_waf_remediation = match waf_result {
+            Some(waf) => matches!(
+                waf.action,
+                crate::waf::wirefilter::WafAction::Block
+                | crate::waf::wirefilter::WafAction::Challenge
+                | crate::waf::wirefilter::WafAction::RateLimit
+            ),
             None => false,
         };
 
-        // If neither WAF result requiring remediation nor threat data is available, return None
-        if !has_remediation_data && threat_data.is_none() {
+        // Check if threat data is meaningful (not just default/empty values)
+        let has_meaningful_threat_data = threat_data.map(|threat| {
+            threat.intel.score > 0
+                || threat.intel.reason_code != "NO_DATA"
+                || !threat.intel.categories.is_empty()
+                || !threat.intel.tags.is_empty()
+        }).unwrap_or(false);
+
+        // Create remediation section if:
+        // 1. WAF action is Block/Challenge/RateLimit (will populate WAF fields), OR
+        // 2. There's meaningful threat intelligence data (will populate threat fields)
+        // Note: WAF fields (waf_action, waf_rule_id, waf_rule_name) are populated for Block/Challenge/RateLimit
+        // RateLimit is included because it blocks requests when the limit is exceeded
+        // Allow actions don't populate WAF fields, but remediation section can still exist if there's meaningful threat data
+        if !has_waf_remediation && !has_meaningful_threat_data {
             return None;
         }
 
@@ -581,42 +600,56 @@ impl HttpAccessLog {
             ip_asn_country: None,
         };
 
-        // Populate WAF data if available, but only for actions that require remediation (Block/Challenge)
-        // Allow actions don't need remediation details, but we still want to track them for auditing
+        // Populate WAF data if available for actions that require remediation (Block/Challenge/RateLimit)
+        // RateLimit actions also populate WAF fields because they block/challenge requests when exceeded
+        // Allow actions don't populate WAF fields, but remediation section may still exist if there's meaningful threat data
         if let Some(waf) = waf_result {
-            // Only include WAF data in remediation if action is Block or Challenge
-            // Allow actions are informational and don't require remediation
+            // Include WAF data in remediation for Block, Challenge, and RateLimit actions
+            // RateLimit is included because it blocks requests when the limit is exceeded
             match waf.action {
-                crate::waf::wirefilter::WafAction::Block | crate::waf::wirefilter::WafAction::Challenge | crate::waf::wirefilter::WafAction::RateLimit => {
+                crate::waf::wirefilter::WafAction::Block
+                | crate::waf::wirefilter::WafAction::Challenge
+                | crate::waf::wirefilter::WafAction::RateLimit => {
                     remediation.waf_action = Some(format!("{:?}", waf.action).to_lowercase());
                     remediation.waf_rule_id = Some(waf.rule_id.clone());
                     remediation.waf_rule_name = Some(waf.rule_name.clone());
                 }
                 crate::waf::wirefilter::WafAction::Allow => {
-                    // Allow actions don't need remediation details
-                    // They're logged for auditing but not included in remediation section
+                    // Allow actions don't populate WAF fields
+                    // But remediation section may still exist if there's meaningful threat data
                 }
             }
         }
 
-        // Populate threat intelligence data if available
+        // Populate threat intelligence data if available and meaningful
         if let Some(threat) = threat_data {
-            remediation.threat_score = Some(threat.intel.score);
-            remediation.threat_confidence = Some(threat.intel.confidence);
-            remediation.threat_categories = Some(threat.intel.categories.clone());
-            remediation.threat_tags = Some(threat.intel.tags.clone());
-            remediation.threat_reason_code = Some(threat.intel.reason_code.clone());
-            remediation.threat_reason_summary = Some(threat.intel.reason_summary.clone());
-            remediation.threat_advice = Some(threat.advice.clone());
-            // Use iso_code directly from threat response
-            let country_code = threat.context.geo.iso_code.clone();
-            remediation.ip_country = Some(country_code);
-            remediation.ip_asn = Some(threat.context.asn);
-            remediation.ip_asn_org = Some(threat.context.org.clone());
-            remediation.ip_asn_country = Some(threat.context.geo.asn_iso_code.clone());
+            // Only include threat data if it's meaningful (not just default/empty values)
+            if has_meaningful_threat_data {
+                remediation.threat_score = Some(threat.intel.score);
+                remediation.threat_confidence = Some(threat.intel.confidence);
+                remediation.threat_categories = Some(threat.intel.categories.clone());
+                remediation.threat_tags = Some(threat.intel.tags.clone());
+                remediation.threat_reason_code = Some(threat.intel.reason_code.clone());
+                remediation.threat_reason_summary = Some(threat.intel.reason_summary.clone());
+                remediation.threat_advice = Some(threat.advice.clone());
+                // Use iso_code directly from threat response
+                let country_code = threat.context.geo.iso_code.clone();
+                remediation.ip_country = Some(country_code);
+                remediation.ip_asn = Some(threat.context.asn);
+                remediation.ip_asn_org = Some(threat.context.org.clone());
+                remediation.ip_asn_country = Some(threat.context.geo.asn_iso_code.clone());
+            }
         }
 
-        Some(remediation)
+        // Only return remediation if it has any meaningful data (WAF fields for Block/Challenge or meaningful threat data)
+        let has_waf_data = remediation.waf_action.is_some();
+        let has_threat_data = remediation.threat_score.is_some() || remediation.threat_reason_code.is_some();
+
+        if has_waf_data || has_threat_data {
+            Some(remediation)
+        } else {
+            None
+        }
     }
 
     pub fn to_json(&self) -> Result<String, serde_json::Error> {

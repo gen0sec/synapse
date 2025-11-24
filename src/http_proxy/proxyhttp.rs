@@ -84,10 +84,11 @@ impl ProxyHttp for LB {
         let ep = _ctx.extraparams.clone();
 
         // Try to get TLS fingerprint if available
+        // Use fallback lookup to handle PROXY protocol address mismatches
         if _ctx.tls_fingerprint.is_none() {
             if let Some(peer_addr) = session.client_addr().and_then(|addr| addr.as_inet()) {
                 let std_addr = std::net::SocketAddr::new(peer_addr.ip().into(), peer_addr.port());
-                if let Some(fingerprint) = crate::utils::tls_client_hello::get_fingerprint(&std_addr) {
+                if let Some(fingerprint) = crate::utils::tls_client_hello::get_fingerprint_with_fallback(&std_addr) {
                     _ctx.tls_fingerprint = Some(fingerprint.clone());
                     debug!(
                         "TLS Fingerprint retrieved for session - Peer: {}, JA4: {}, SNI: {:?}, ALPN: {:?}",
@@ -97,7 +98,7 @@ impl ProxyHttp for LB {
                         fingerprint.alpn
                     );
                 } else {
-                    debug!("No TLS fingerprint found in storage for peer: {}", std_addr);
+                    debug!("No TLS fingerprint found in storage for peer: {} (PROXY protocol may cause this)", std_addr);
                 }
             }
         }
@@ -817,8 +818,9 @@ impl ProxyHttp for LB {
                 Some(tls_fp.clone())
             } else if let Some(peer_addr) = session.client_addr().and_then(|addr| addr.as_inet()) {
                 // Try to retrieve TLS fingerprint again if not in context
+                // Use fallback lookup to handle PROXY protocol address mismatches
                 let std_addr = std::net::SocketAddr::new(peer_addr.ip().into(), peer_addr.port());
-                if let Some(fingerprint) = crate::utils::tls_client_hello::get_fingerprint(&std_addr) {
+                if let Some(fingerprint) = crate::utils::tls_client_hello::get_fingerprint_with_fallback(&std_addr) {
                     debug!("TLS fingerprint retrieved from storage - JA4: {}, JA4_unsorted: {}, SNI: {:?}, ALPN: {:?}",
                            fingerprint.ja4, fingerprint.ja4_unsorted, fingerprint.sni, fingerprint.alpn);
                     // Store in context for future use in this request

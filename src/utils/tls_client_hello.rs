@@ -1,23 +1,31 @@
 use pingora_core::protocols::ClientHelloWrapper;
 use crate::utils::tls_fingerprint::Fingerprint;
-use log::{debug};
+use log::{debug, warn};
 use std::sync::Arc;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use std::net::SocketAddr;
 use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// TLS fingerprint entry with timestamp for fallback matching
+#[derive(Clone)]
+pub struct FingerprintEntry {
+    pub fingerprint: Arc<Fingerprint>,
+    pub stored_at: SystemTime,
+}
 
 /// Global storage for TLS fingerprints keyed by connection peer address
 /// This is a temporary storage until the fingerprint can be moved to session context
-static TLS_FINGERPRINTS: OnceLock<Mutex<HashMap<String, Arc<Fingerprint>>>> = OnceLock::new();
+static TLS_FINGERPRINTS: OnceLock<Mutex<HashMap<String, FingerprintEntry>>> = OnceLock::new();
 
-fn get_fingerprint_map() -> &'static Mutex<HashMap<String, Arc<Fingerprint>>> {
+fn get_fingerprint_map() -> &'static Mutex<HashMap<String, FingerprintEntry>> {
     TLS_FINGERPRINTS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Public function to access the fingerprint map
 /// This is used by tls_acceptor_wrapper to store fingerprints
-pub fn get_fingerprint_map_public() -> &'static Mutex<HashMap<String, Arc<Fingerprint>>> {
+pub fn get_fingerprint_map_public() -> &'static Mutex<HashMap<String, FingerprintEntry>> {
     get_fingerprint_map()
 }
 
@@ -57,7 +65,13 @@ pub fn generate_fingerprint_from_client_hello(
                 let std_addr = SocketAddr::new(inet.ip().into(), inet.port());
                 let key = format!("{}", std_addr);
                 if let Ok(mut map) = get_fingerprint_map().lock() {
-                    map.insert(key, fingerprint_arc.clone());
+                    let stored_at = SystemTime::now();
+                    let entry = FingerprintEntry {
+                        fingerprint: fingerprint_arc.clone(),
+                        stored_at,
+                    };
+                    map.insert(key, entry);
+                    debug!("Stored TLS fingerprint for {} at {:?}", std_addr, stored_at);
                 }
             }
         }
@@ -116,10 +130,61 @@ pub fn extract_and_fingerprint<S: std::os::unix::io::AsRawFd>(
 pub fn get_fingerprint(peer_addr: &SocketAddr) -> Option<Arc<Fingerprint>> {
     let key = format!("{}", peer_addr);
     if let Ok(map) = get_fingerprint_map().lock() {
-        map.get(&key).cloned()
+        map.get(&key).map(|entry| entry.fingerprint.clone())
     } else {
         None
     }
+}
+
+/// Get stored TLS fingerprint with fallback strategies for PROXY protocol
+/// This tries multiple lookup strategies to handle cases where PROXY protocol
+/// might cause address mismatches between storage and retrieval
+pub fn get_fingerprint_with_fallback(peer_addr: &SocketAddr) -> Option<Arc<Fingerprint>> {
+    // First try the exact address match
+    if let Some(fp) = get_fingerprint(peer_addr) {
+        debug!("Found TLS fingerprint with exact address match: {}", peer_addr);
+        return Some(fp);
+    }
+
+    // If not found, try to find fingerprints with matching IP (in case port differs)
+    // This helps when PROXY protocol causes port mismatches or when ClientHello
+    // callback receives a different address than session.client_addr()
+    if let Ok(map) = get_fingerprint_map().lock() {
+        let peer_ip = peer_addr.ip();
+        let mut matching_entries: Vec<(SocketAddr, FingerprintEntry)> = Vec::new();
+
+        for (key, entry) in map.iter() {
+            if let Ok(addr) = key.parse::<SocketAddr>() {
+                if addr.ip() == peer_ip {
+                    matching_entries.push((addr, entry.clone()));
+                }
+            }
+        }
+
+        match matching_entries.len() {
+            0 => {
+                debug!("No TLS fingerprint found for IP {} (exact match failed, no IP matches)", peer_ip);
+            }
+            1 => {
+                let (matched_addr, entry) = &matching_entries[0];
+                debug!("Found TLS fingerprint with matching IP but different port: {} -> {} (fallback lookup)", peer_addr, matched_addr);
+                return Some(entry.fingerprint.clone());
+            }
+            _ => {
+                // Multiple matches - use the most recent one (most likely to be the correct connection)
+                // This handles cases where PROXY protocol causes address mismatches
+                let (matched_addr, entry) = matching_entries.iter()
+                    .max_by_key(|(_, e)| e.stored_at)
+                    .unwrap();
+
+                warn!("Multiple TLS fingerprints found for IP {} ({} matches), using most recent from {} (stored at {:?})",
+                      peer_ip, matching_entries.len(), matched_addr, entry.stored_at);
+                return Some(entry.fingerprint.clone());
+            }
+        }
+    }
+
+    None
 }
 
 /// Remove stored TLS fingerprint for a peer address
@@ -127,6 +192,22 @@ pub fn remove_fingerprint(peer_addr: &SocketAddr) {
     let key = format!("{}", peer_addr);
     if let Ok(mut map) = get_fingerprint_map().lock() {
         map.remove(&key);
+    }
+}
+
+/// Clean up old fingerprints (older than 5 minutes) to prevent memory leaks
+/// This should be called periodically
+pub fn cleanup_old_fingerprints() {
+    let cutoff = SystemTime::now().checked_sub(std::time::Duration::from_secs(300))
+        .unwrap_or(UNIX_EPOCH);
+
+    if let Ok(mut map) = get_fingerprint_map().lock() {
+        let initial_len = map.len();
+        map.retain(|_, entry| entry.stored_at > cutoff);
+        let removed = initial_len - map.len();
+        if removed > 0 {
+            debug!("Cleaned up {} old TLS fingerprints (kept {} active)", removed, map.len());
+        }
     }
 }
 
@@ -138,4 +219,6 @@ pub fn extract_and_fingerprint<S>(
     // ClientHello extraction is only supported on Unix
     None
 }
+
+
 
