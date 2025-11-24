@@ -331,3 +331,56 @@ pub fn is_ip_allowed_by_access_rules(ip: IpAddr) -> bool {
     }
     false
 }
+
+/// Check if an IP address is blocked by access rules
+/// Returns true if the IP should be blocked, false otherwise
+pub fn is_ip_blocked_by_access_rules(ip: IpAddr) -> bool {
+    if let Ok(guard) = global_config().read() {
+        if let Some(cfg) = guard.as_ref() {
+            let block_rules = &cfg.access_rules.block;
+
+            // Check direct IP matches
+            for ip_str in &block_rules.ips {
+                if let Ok(blocked_ip) = ip_str.parse::<IpAddr>() {
+                    if ip == blocked_ip {
+                        return true;
+                    }
+                }
+
+                // Check CIDR ranges
+                if let Some((network, prefix_len)) = parse_ip_or_cidr(ip_str) {
+                    if is_ip_in_cidr(ip, network, prefix_len) {
+                        return true;
+                    }
+                }
+            }
+
+            // Check country-based block rules
+            for country_map in &block_rules.country {
+                for (_country_code, ip_list) in country_map.iter() {
+                    for ip_str in ip_list {
+                        if let Some((network, prefix_len)) = parse_ip_or_cidr(ip_str) {
+                            if is_ip_in_cidr(ip, network, prefix_len) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Check ASN-based block rules
+            for asn_map in &block_rules.asn {
+                for (_asn, ip_list) in asn_map.iter() {
+                    for ip_str in ip_list {
+                        if let Some((network, prefix_len)) = parse_ip_or_cidr(ip_str) {
+                            if is_ip_in_cidr(ip, network, prefix_len) {
+                                return true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
+}

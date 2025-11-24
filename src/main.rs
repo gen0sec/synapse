@@ -191,6 +191,8 @@ async fn async_main(_args: Args, config: Config) -> Result<()> {
 
     if config.network.disable_xdp {
         log::info!("XDP disabled by config, skipping BPF attachment");
+        log::info!("Access rules will be enforced in userland (application layer) instead of kernel level");
+        log::info!("Note: Userland enforcement has higher latency than XDP but still provides IP blocking");
     } else {
         for iface in iface_names {
             let boxed_open: Box<MaybeUninit<libbpf_rs::OpenObject>> = Box::new(MaybeUninit::uninit());
@@ -232,6 +234,11 @@ async fn async_main(_args: Args, config: Config) -> Result<()> {
             if config.mode == "agent" {
                 log::info!("Access rules initialized for agent mode - network-level filtering active");
             }
+        } else if !config.network.disable_xdp {
+            // XDP was enabled in config but no skeletons were loaded (likely due to errors)
+            log::warn!("XDP attachment failed - falling back to userland access rules enforcement");
+            log::warn!("Access rules will be enforced in userland (application layer) with higher latency");
+            log::info!("To suppress this warning, set 'disable_xdp: true' in config.yaml");
         }
     }
 
