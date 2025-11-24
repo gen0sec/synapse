@@ -729,7 +729,7 @@ impl TcpFingerprintCollector {
                         fingerprint_groups.entry(entry.key.fingerprint.clone()).or_insert_with(Vec::new).push(entry);
                     }
 
-                    log::info!("Unique fingerprint patterns: {} different patterns found", fingerprint_groups.len());
+                    log::debug!("Unique fingerprint patterns: {} different patterns found", fingerprint_groups.len());
 
                     // Show top unique fingerprint patterns by total packet count
                     let mut pattern_stats: Vec<_> = fingerprint_groups.iter().map(|(pattern, entries)| {

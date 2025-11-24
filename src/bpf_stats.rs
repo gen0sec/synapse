@@ -431,7 +431,17 @@ impl BpfStatsCollector {
 
         match self.collect_aggregated_stats() {
             Ok(stats) => {
-                log::info!("{}", stats.summary());
+                // Output as JSON for structured logging
+                match stats.to_json() {
+                    Ok(json) => {
+                        log::info!("{}", json);
+                    }
+                    Err(e) => {
+                        // Fallback to text summary if JSON serialization fails
+                        log::warn!("Failed to serialize BPF stats to JSON: {}, using text summary", e);
+                        log::info!("{}", stats.summary());
+                    }
+                }
                 Ok(())
             }
             Err(e) => {

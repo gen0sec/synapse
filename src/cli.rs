@@ -119,6 +119,15 @@ pub struct NetworkConfig {
     pub ifaces: Vec<String>,
     #[serde(default)]
     pub disable_xdp: bool,
+    /// IP version support mode: "ipv4", "ipv6", or "both" (default: "both")
+    /// Note: XDP requires IPv6 to be enabled at kernel level for attachment,
+    /// even in IPv4-only mode. Set to "ipv4" to skip XDP if IPv6 cannot be enabled.
+    #[serde(default = "default_ip_version")]
+    pub ip_version: String,
+}
+
+fn default_ip_version() -> String {
+    "both".to_string()
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -215,6 +224,7 @@ impl Config {
                 iface: "eth0".to_string(),
                 ifaces: vec![],
                 disable_xdp: false,
+                ip_version: "both".to_string(),
             },
             arxignis: Gen0SecConfig {
                 api_key: "".to_string(),
@@ -419,6 +429,17 @@ impl Config {
         }
         if let Ok(val) = env::var("AX_NETWORK_DISABLE_XDP") {
             self.network.disable_xdp = val.parse().unwrap_or(false);
+        }
+        if let Ok(val) = env::var("AX_NETWORK_IP_VERSION") {
+            // Validate ip_version value
+            match val.as_str() {
+                "ipv4" | "ipv6" | "both" => {
+                    self.network.ip_version = val;
+                }
+                _ => {
+                    log::warn!("Invalid AX_NETWORK_IP_VERSION value '{}', using default 'both'. Valid values: ipv4, ipv6, both", val);
+                }
+            }
         }
 
         // Gen0Sec configuration overrides

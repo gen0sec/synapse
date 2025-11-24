@@ -14,7 +14,7 @@
 # - AX_ACME_DOMAINS, AX_ACME_CONTACTS (comma-separated)
 # - AX_ACME_USE_PROD, AX_ACME_DIRECTORY, AX_ACME_ACCEPT_TOS, AX_ACME_CA_ROOT
 # - AX_REDIS_URL, AX_REDIS_PREFIX
-# - AX_NETWORK_IFACE, AX_NETWORK_IFACES (comma-separated), AX_NETWORK_DISABLE_XDP
+# - AX_NETWORK_IFACE, AX_NETWORK_IFACES (comma-separated), AX_NETWORK_DISABLE_XDP, AX_NETWORK_IP_VERSION
 # - AX_ARXIGNIS_API_KEY, AX_ARXIGNIS_BASE_URL, AX_ARXIGNIS_LOG_SENDING_ENABLED, AX_ARXIGNIS_INCLUDE_RESPONSE_BODY, AX_ARXIGNIS_MAX_BODY_SIZE
 # - AX_DOMAINS_WHITELIST (comma-separated)
 # - AX_LOGGING_LEVEL
@@ -50,6 +50,17 @@ network:
 
   # Disable XDP packet filtering (run without BPF/XDP)
   disable_xdp: false
+
+  # IP version support mode: "ipv4", "ipv6", or "both" (default: "both")
+  # Note: XDP requires IPv6 to be enabled at kernel level for attachment,
+  # even in IPv4-only mode. This is a kernel limitation. When set to "ipv4",
+  # the system will attempt to enable IPv6 on the interface just for XDP
+  # attachment (not system-wide), allowing IPv4-only operation elsewhere.
+  # Options:
+  #   - "ipv4": Process IPv4 packets only (IPv6 still required for XDP attachment)
+  #   - "ipv6": Process IPv6 packets only
+  #   - "both": Process both IPv4 and IPv6 packets (default)
+  ip_version: "both"
 
 # Gen0Sec Configuration
 arxignis:
@@ -223,8 +234,13 @@ pingora:
   # Health check interval in seconds
   healthcheck_interval: 2
 
-  # Proxy protocol enabled
-  proxy_protocol_enabled: false
+  # PROXY protocol configuration
+  proxy_protocol:
+    # Enable PROXY protocol parsing (required when behind a load balancer that sends PROXY headers)
+    enabled: true
+    # Timeout for reading PROXY protocol header in milliseconds
+    timeout_ms: 1000
+
 
 # ACME Configuration (Let's Encrypt certificate management)
 acme:
