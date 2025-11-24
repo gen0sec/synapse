@@ -532,6 +532,13 @@ int arxignis_xdp_filter(struct xdp_md *ctx)
     // This filter is designed to only block incoming traffic
     // It should be attached only to ingress hooks, not egress
     // The filtering logic below blocks packets based on source IP addresses
+    //
+    // IP Version Support:
+    // - Supports IPv4-only, IPv6-only, and hybrid (both) modes
+    // - Note: XDP requires IPv6 to be enabled at kernel level for attachment,
+    //   even when processing only IPv4 packets. This is a kernel limitation.
+    // - The BPF program processes both IPv4 and IPv6 packets based on the
+    //   ethernet protocol type (ETH_P_IP for IPv4, ETH_P_IPV6 for IPv6)
 
     void *data_end = (void *)(long)ctx->data_end;
     void *cursor = (void *)(long)ctx->data;

@@ -6,20 +6,29 @@ use crate::bpf::{self, FilterSkel};
 use libbpf_rs::{Xdp, XdpFlags};
 use nix::libc;
 
-fn is_ipv6_disabled() -> bool {
-    // Check if IPv6 is disabled system-wide
+fn is_ipv6_disabled(iface: Option<&str>) -> bool {
+    // Check if IPv6 is disabled for a specific interface or system-wide
+    if let Some(iface_name) = iface {
+        if let Ok(content) = fs::read_to_string(format!("/proc/sys/net/ipv6/conf/{}/disable_ipv6", iface_name)) {
+            return content.trim() == "1";
+        }
+    }
+    // Fall back to system-wide check
     if let Ok(content) = fs::read_to_string("/proc/sys/net/ipv6/conf/all/disable_ipv6") {
         return content.trim() == "1";
     }
     false
 }
 
-fn try_enable_ipv6() -> Result<(), Box<dyn std::error::Error>> {
-    // Try to enable IPv6 temporarily for XDP attachment
-    if is_ipv6_disabled() {
-        log::debug!("IPv6 is disabled, attempting to enable it for XDP attachment");
-        std::fs::write("/proc/sys/net/ipv6/conf/all/disable_ipv6", "0")?;
-        log::info!("Temporarily enabled IPv6 for XDP attachment");
+fn try_enable_ipv6_for_interface(iface: &str) -> Result<(), Box<dyn std::error::Error>> {
+    // Try to enable IPv6 only for the specific interface (not system-wide)
+    // This allows IPv4-only operation elsewhere while enabling XDP on this interface
+    let disable_path = format!("/proc/sys/net/ipv6/conf/{}/disable_ipv6", iface);
+
+    if is_ipv6_disabled(Some(iface)) {
+        log::debug!("IPv6 is disabled for interface {}, attempting to enable it for XDP attachment", iface);
+        std::fs::write(&disable_path, "0")?;
+        log::info!("Enabled IPv6 for interface {} (required for XDP, IPv4-only elsewhere)", iface);
         Ok(())
     } else {
         Ok(())
@@ -29,6 +38,8 @@ fn try_enable_ipv6() -> Result<(), Box<dyn std::error::Error>> {
 pub fn bpf_attach_to_xdp(
     skel: &mut FilterSkel<'_>,
     ifindex: i32,
+    iface_name: Option<&str>,
+    ip_version: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Try hardware mode first, fall back to driver mode if not supported
     let xdp = Xdp::new(skel.progs.arxignis_xdp_filter.as_fd().into());
@@ -92,22 +103,39 @@ pub fn bpf_attach_to_xdp(
             if error_msg.contains("97") || error_msg.contains("Address family not supported") {
                 log::debug!("SKB mode failed with EAFNOSUPPORT, IPv6 might be disabled");
 
-                // Try to enable IPv6 and retry attachment
-                if try_enable_ipv6().is_ok() {
-                    log::debug!("Retrying XDP attachment after enabling IPv6");
+                // Note: XDP requires IPv6 to be enabled at the kernel level for attachment,
+                // even when processing only IPv4 packets. This is a kernel limitation.
+                // For IPv4-only mode, we can enable IPv6 just for this interface (not system-wide)
+                // which allows XDP to attach while still operating in IPv4-only mode.
+                if ip_version == "ipv4" {
+                    log::info!("IPv4-only mode: Attempting to enable IPv6 on interface for XDP attachment (kernel requirement)");
+                }
 
-                    // Retry SKB mode after enabling IPv6
-                    match xdp.attach(ifindex, XdpFlags::SKB_MODE) {
-                        Ok(()) => {
-                            log::info!("XDP program attached in generic SKB mode (IPv6 re-enabled)");
-                            return Ok(());
+                // Try to enable IPv6 only for this specific interface (not system-wide)
+                // This allows IPv4-only operation elsewhere while enabling XDP on this interface
+                if let Some(iface) = iface_name {
+                    if try_enable_ipv6_for_interface(iface).is_ok() {
+                        log::debug!("Retrying XDP attachment after enabling IPv6 for interface {}", iface);
+
+                        // Retry SKB mode after enabling IPv6 for the interface
+                        match xdp.attach(ifindex, XdpFlags::SKB_MODE) {
+                            Ok(()) => {
+                                if ip_version == "ipv4" {
+                                    log::info!("XDP program attached in generic SKB mode (IPv6 enabled on interface {} for kernel compatibility, processing IPv4 only)", iface);
+                                } else {
+                                    log::info!("XDP program attached in generic SKB mode (IPv6 enabled for interface {})", iface);
+                                }
+                                return Ok(());
+                            }
+                            Err(e2) => {
+                                log::debug!("SKB mode still failed after enabling IPv6 for interface: {}", e2);
+                            }
                         }
-                        Err(e2) => {
-                            log::debug!("SKB mode still failed after enabling IPv6: {}", e2);
-                        }
+                    } else {
+                        log::debug!("Failed to enable IPv6 for interface {} or no permission", iface);
                     }
                 } else {
-                    log::debug!("Failed to enable IPv6 or no permission");
+                    log::debug!("Interface name not provided, cannot enable IPv6 per-interface");
                 }
 
                 // Try with UPDATE_IF_NOEXIST flag as last resort
