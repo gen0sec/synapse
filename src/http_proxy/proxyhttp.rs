@@ -83,6 +83,22 @@ impl ProxyHttp for LB {
 
         let ep = _ctx.extraparams.clone();
 
+        // Userland access rules check (fallback when eBPF/XDP is not available)
+        // Check if IP is blocked by access rules
+        if let Some(peer_addr) = session.client_addr().and_then(|addr| addr.as_inet()) {
+            let client_ip: std::net::IpAddr = peer_addr.ip().into();
+            
+            // Check if IP is blocked
+            if crate::access_rules::is_ip_blocked_by_access_rules(client_ip) {
+                log::info!("Userland access rules: Blocked request from IP: {} (matched block rule)", client_ip);
+                let mut header = ResponseHeader::build(403, None).unwrap();
+                header.insert_header("X-Block-Reason", "access_rules").ok();
+                session.set_keepalive(None);
+                session.write_response_header(Box::new(header), true).await?;
+                return Ok(true);
+            }
+        }
+
         // Try to get TLS fingerprint if available
         // Use fallback lookup to handle PROXY protocol address mismatches
         if _ctx.tls_fingerprint.is_none() {
