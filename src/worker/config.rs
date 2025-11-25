@@ -133,7 +133,8 @@ pub async fn fetch_config(
         .send()
         .await?;
 
-    match response.status() {
+    let status = response.status();
+    match status {
         StatusCode::OK => {
             // Check if response is gzipped by looking at Content-Encoding header first
             let content_encoding = response.headers()
@@ -176,15 +177,44 @@ pub async fn fetch_config(
                     .map_err(|e| format!("Response contains invalid UTF-8: {}", e))?
             };
 
-            let body: ConfigApiResponse = serde_json::from_str(&json_text)
-                .map_err(|e| format!("Failed to parse JSON response: {}", e))?;
+            // Check if response body is empty
+            let json_text = json_text.trim();
+            if json_text.is_empty() {
+                return Err("API returned empty response body".into());
+            }
+
+            let body: ConfigApiResponse = serde_json::from_str(json_text)
+                .map_err(|e| {
+                    let preview = if json_text.len() > 200 {
+                        format!("{}...", &json_text[..200])
+                    } else {
+                        json_text.to_string()
+                    };
+                    format!("Failed to parse JSON response: {}. Response preview: {}", e, preview)
+                })?;
             // Update global config snapshot
             set_global_config(body.config.clone());
             Ok(body)
         }
         StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND | StatusCode::INTERNAL_SERVER_ERROR => {
-            let body: ErrorResponse = serde_json::from_str(&response.text().await?)?;
-            Err(format!("API Error: {}", body.error).into())
+            let response_text = response.text().await?;
+            let trimmed = response_text.trim();
+            let status_code = status.as_u16();
+            if trimmed.is_empty() {
+                return Err(format!("API returned empty response body with status {}", status_code).into());
+            }
+            match serde_json::from_str::<ErrorResponse>(trimmed) {
+                Ok(body) => Err(format!("API Error: {}", body.error).into()),
+                Err(e) => {
+                    let preview = if trimmed.len() > 200 {
+                        format!("{}...", &trimmed[..200])
+                    } else {
+                        trimmed.to_string()
+                    };
+                    Err(format!("API returned status {} but response is not valid JSON: {}. Response preview: {}",
+                        status_code, e, preview).into())
+                }
+            }
         }
 
         status => Err(format!(

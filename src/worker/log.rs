@@ -8,6 +8,9 @@ use chrono::{DateTime, Utc};
 
 use crate::http_client;
 
+/// Maximum batch size allowed by the API server
+const API_MAX_BATCH_SIZE: usize = 1000;
+
 /// Configuration for sending access logs to arxignis server
 #[derive(Debug, Clone)]
 pub struct LogSenderConfig {
@@ -27,7 +30,7 @@ impl LogSenderConfig {
             enabled,
             base_url,
             api_key,
-            batch_size_limit: 5000,        // Default: 5000 logs per batch
+            batch_size_limit: 1000,        // Default: 1000 logs per batch (API limit)
             batch_size_bytes: 5 * 1024 * 1024, // Default: 5MB
             batch_timeout_secs: 10,        // Default: 10 seconds
             include_request_body: false,   // Default: disabled
@@ -206,6 +209,7 @@ pub fn send_event(event: UnifiedEvent) {
 }
 
 /// Send a batch of events to the /events endpoint
+/// Automatically splits large batches into chunks of API_MAX_BATCH_SIZE
 async fn send_event_batch(events: Vec<UnifiedEvent>) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     if events.is_empty() {
         return Ok(());
@@ -232,27 +236,38 @@ async fn send_event_batch(events: Vec<UnifiedEvent>) -> Result<(), Box<dyn std::
         .map_err(|e| format!("Failed to get global HTTP client: {}", e))?;
 
     let url = format!("{}/events", config.base_url);
-    let json = serde_json::to_string(&events)?;
 
-    log::debug!("Sending {} events to {}", events.len(), url);
+    // Split events into chunks of API_MAX_BATCH_SIZE to respect API limits
+    let chunks: Vec<_> = events.chunks(API_MAX_BATCH_SIZE).collect();
+    let total_events = events.len();
 
-    let response = client
-        .post(&url)
-        .header("Authorization", format!("Bearer {}", config.api_key))
-        .header("Content-Type", "application/json")
-        .body(json)
-        .send()
-        .await?;
+    for (chunk_idx, chunk) in chunks.iter().enumerate() {
+        let json = serde_json::to_string(chunk)?;
 
-    if !response.status().is_success() {
-        let status = response.status();
-        let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
-        log::warn!("Failed to send event batch to /events endpoint: {} - {} (batch size: {})", status, error_text, events.len());
-        return Err(format!("HTTP {}: {}", status, error_text).into());
-    } else {
-        log::debug!("Successfully sent event batch to /events endpoint (batch size: {})", events.len());
+        log::debug!("Sending chunk {}/{} ({} events) to {}",
+            chunk_idx + 1, chunks.len(), chunk.len(), url);
+
+        let response = client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", config.api_key))
+            .header("Content-Type", "application/json")
+            .body(json)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let error_text = response.text().await.unwrap_or_else(|_| "Unknown error".to_string());
+            log::warn!("Failed to send event batch chunk {}/{} to /events endpoint: {} - {} (chunk size: {}, total batch: {})",
+                chunk_idx + 1, chunks.len(), status, error_text, chunk.len(), total_events);
+            return Err(format!("HTTP {}: {}", status, error_text).into());
+        } else {
+            log::debug!("Successfully sent event batch chunk {}/{} to /events endpoint (chunk size: {})",
+                chunk_idx + 1, chunks.len(), chunk.len());
+        }
     }
 
+    log::debug!("Successfully sent all {} events in {} chunk(s) to /events endpoint", total_events, chunks.len());
     Ok(())
 }
 
