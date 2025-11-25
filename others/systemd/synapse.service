@@ -32,23 +32,28 @@ Environment="RUST_LOG=info"
 # Working directory
 WorkingDirectory=/var/lib/synapse
 
-# Security settings
-# Note: Some of these may need adjustment depending on your requirements
-NoNewPrivileges=true
-PrivateTmp=true
+# Run as root with full privileges for XDP/BPF
+User=root
+Group=root
 
-# File system access
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/log/synapse /var/run /var/lib/synapse /etc/synapse/certs
+# Security settings - disabled for XDP/BPF to work
+# NoNewPrivileges must be false for XDP/BPF operations
+NoNewPrivileges=false
+PrivateTmp=false
+
+# File system access - minimal restrictions for XDP/BPF
+ProtectSystem=false
+ProtectHome=false
+# XDP/BPF requires access to /sys/fs/bpf and network interfaces
+ReadWritePaths=/var/log/synapse /var/run /var/lib/synapse /etc/synapse/certs /sys/fs/bpf
+ReadOnlyPaths=/sys/class/net /sys/devices /proc/sys/net
 
 # Capabilities (required for XDP/BPF)
-AmbientCapabilities=CAP_NET_ADMIN CAP_SYS_ADMIN CAP_BPF
+AmbientCapabilities=CAP_NET_ADMIN CAP_SYS_ADMIN CAP_BPF CAP_NET_BIND_SERVICE
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_SYS_ADMIN CAP_BPF CAP_NET_BIND_SERVICE
 
-# Network
+# Network - must have full network access for XDP
 PrivateNetwork=false
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
 
 # Logging
 StandardOutput=journal
@@ -57,4 +62,3 @@ SyslogIdentifier=synapse
 
 [Install]
 WantedBy=multi-user.target
-
