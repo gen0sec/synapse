@@ -516,7 +516,7 @@ async fn async_main(_args: Args, config: Config) -> Result<()> {
         enabled: config.arxignis.log_sending_enabled,
         base_url: config.arxignis.base_url.clone(),
         api_key: config.arxignis.api_key.clone(),
-        batch_size_limit: 5000,        // Default: 5000 logs per batch
+        batch_size_limit: 1000,        // Default: 1000 logs per batch (API limit)
         batch_size_bytes: 5 * 1024 * 1024, // Default: 5MB
         batch_timeout_secs: 10,        // Default: 10 seconds
         include_request_body: false,   // Default: disabled
