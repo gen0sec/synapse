@@ -18,6 +18,8 @@ pub struct BpfAccessStats {
     pub ipv4_recently_banned_hits: u64,
     pub ipv6_banned_hits: u64,
     pub ipv6_recently_banned_hits: u64,
+    pub tcp_fingerprint_blocks_ipv4: u64,
+    pub tcp_fingerprint_blocks_ipv6: u64,
     pub drop_rate_percentage: f64,
     pub dropped_ip_addresses: DroppedIpAddresses,
 }
@@ -78,6 +80,8 @@ impl BpfAccessStats {
         let ipv4_recently_banned_hits = Self::read_bpf_counter(&skel.maps.ipv4_recently_banned_stats)?;
         let ipv6_banned_hits = Self::read_bpf_counter(&skel.maps.ipv6_banned_stats)?;
         let ipv6_recently_banned_hits = Self::read_bpf_counter(&skel.maps.ipv6_recently_banned_stats)?;
+        let tcp_fingerprint_blocks_ipv4 = Self::read_bpf_counter(&skel.maps.tcp_fingerprint_blocks_ipv4)?;
+        let tcp_fingerprint_blocks_ipv6 = Self::read_bpf_counter(&skel.maps.tcp_fingerprint_blocks_ipv6)?;
 
         // Collect dropped IP addresses
         let dropped_ip_addresses = Self::collect_dropped_ip_addresses(skel)?;
@@ -97,6 +101,8 @@ impl BpfAccessStats {
             ipv4_recently_banned_hits,
             ipv6_banned_hits,
             ipv6_recently_banned_hits,
+            tcp_fingerprint_blocks_ipv4,
+            tcp_fingerprint_blocks_ipv6,
             drop_rate_percentage,
             dropped_ip_addresses,
         })
@@ -203,14 +209,16 @@ impl BpfAccessStats {
     /// Create a summary string for logging
     pub fn summary(&self) -> String {
         let mut summary = format!(
-            "BPF Stats: {} packets processed, {} dropped ({:.2}%), IPv4 banned: {}, IPv4 recent: {}, IPv6 banned: {}, IPv6 recent: {}",
+            "BPF Stats: {} packets processed, {} dropped ({:.2}%), IPv4 banned: {}, IPv4 recent: {}, IPv6 banned: {}, IPv6 recent: {}, TCP FP blocks (IPv4/IPv6): {}/{}",
             self.total_packets_processed,
             self.total_packets_dropped,
             self.drop_rate_percentage,
             self.ipv4_banned_hits,
             self.ipv4_recently_banned_hits,
             self.ipv6_banned_hits,
-            self.ipv6_recently_banned_hits
+            self.ipv6_recently_banned_hits,
+            self.tcp_fingerprint_blocks_ipv4,
+            self.tcp_fingerprint_blocks_ipv6
         );
 
         // Add top dropped IP addresses if any
@@ -383,6 +391,8 @@ impl BpfStatsCollector {
             ipv4_recently_banned_hits: 0,
             ipv6_banned_hits: 0,
             ipv6_recently_banned_hits: 0,
+            tcp_fingerprint_blocks_ipv4: 0,
+            tcp_fingerprint_blocks_ipv6: 0,
             drop_rate_percentage: 0.0,
             dropped_ip_addresses: DroppedIpAddresses {
                 ipv4_addresses: HashMap::new(),
@@ -398,6 +408,8 @@ impl BpfStatsCollector {
             aggregated.ipv4_recently_banned_hits += stat.ipv4_recently_banned_hits;
             aggregated.ipv6_banned_hits += stat.ipv6_banned_hits;
             aggregated.ipv6_recently_banned_hits += stat.ipv6_recently_banned_hits;
+            aggregated.tcp_fingerprint_blocks_ipv4 += stat.tcp_fingerprint_blocks_ipv4;
+            aggregated.tcp_fingerprint_blocks_ipv6 += stat.tcp_fingerprint_blocks_ipv6;
 
             // Merge IP addresses
             for (ip, count) in stat.dropped_ip_addresses.ipv4_addresses {
@@ -626,6 +638,8 @@ mod tests {
             ipv4_recently_banned_hits: 10,
             ipv6_banned_hits: 5,
             ipv6_recently_banned_hits: 5,
+            tcp_fingerprint_blocks_ipv4: 0,
+            tcp_fingerprint_blocks_ipv6: 0,
             drop_rate_percentage: 5.0,
             dropped_ip_addresses: DroppedIpAddresses {
                 ipv4_addresses,
@@ -652,6 +666,8 @@ mod tests {
             ipv4_recently_banned_hits: 3,
             ipv6_banned_hits: 1,
             ipv6_recently_banned_hits: 1,
+            tcp_fingerprint_blocks_ipv4: 0,
+            tcp_fingerprint_blocks_ipv6: 0,
             drop_rate_percentage: 10.0,
             dropped_ip_addresses: DroppedIpAddresses {
                 ipv4_addresses: HashMap::new(),

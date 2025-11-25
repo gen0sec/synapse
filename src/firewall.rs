@@ -15,6 +15,14 @@ pub trait Firewall {
     fn ban_ipv6(&mut self, ip: Ipv6Addr, prefixlen: u32) -> Result<(), Box<dyn Error>>;
     fn unban_ipv6(&mut self, ip: Ipv6Addr, prefixlen: u32) -> Result<(), Box<dyn Error>>;
     fn check_if_notice_ipv6(&mut self, ip: Ipv6Addr) -> Result<bool, Box<dyn Error>>;
+
+    // TCP fingerprint blocking methods
+    fn block_tcp_fingerprint(&mut self, fingerprint: &str) -> Result<(), Box<dyn Error>>;
+    fn unblock_tcp_fingerprint(&mut self, fingerprint: &str) -> Result<(), Box<dyn Error>>;
+    fn block_tcp_fingerprint_v6(&mut self, fingerprint: &str) -> Result<(), Box<dyn Error>>;
+    fn unblock_tcp_fingerprint_v6(&mut self, fingerprint: &str) -> Result<(), Box<dyn Error>>;
+    fn is_tcp_fingerprint_blocked(&self, fingerprint: &str) -> Result<bool, Box<dyn Error>>;
+    fn is_tcp_fingerprint_blocked_v6(&self, fingerprint: &str) -> Result<bool, Box<dyn Error>>;
 }
 
 pub struct MOATFirewall<'a> {
@@ -24,6 +32,20 @@ pub struct MOATFirewall<'a> {
 impl<'a> MOATFirewall<'a> {
     pub fn new(skel: &'a crate::bpf::FilterSkel<'a>) -> Self {
         Self { skel }
+    }
+
+    /// Convert a fingerprint string to a 14-byte array for BPF map
+    /// Fingerprint format is typically: "TTL:MSS:Window:Scale" (e.g., "064:1460:65535:7")
+    /// This is truncated/padded to exactly 14 bytes
+    fn fingerprint_to_bytes(fingerprint: &str) -> Result<[u8; 14], Box<dyn Error>> {
+        let mut bytes = [0u8; 14];
+        let fp_bytes = fingerprint.as_bytes();
+        
+        // Copy up to 14 bytes
+        let copy_len = std::cmp::min(fp_bytes.len(), 14);
+        bytes[..copy_len].copy_from_slice(&fp_bytes[..copy_len]);
+        
+        Ok(bytes)
     }
 }
 
@@ -129,5 +151,89 @@ impl<'a> Firewall for MOATFirewall<'a> {
         self.skel.maps.banned_ips_v6.delete(ip_bytes)?;
 
         Ok(())
+    }
+
+    fn block_tcp_fingerprint(&mut self, fingerprint: &str) -> Result<(), Box<dyn Error>> {
+        let fp_bytes = Self::fingerprint_to_bytes(fingerprint)?;
+        let flag = 1_u8;
+
+        self.skel
+            .maps
+            .blocked_tcp_fingerprints
+            .update(&fp_bytes, &flag.to_le_bytes(), MapFlags::ANY)?;
+
+        log::info!("Blocked TCP fingerprint (IPv4): {}", fingerprint);
+        Ok(())
+    }
+
+    fn unblock_tcp_fingerprint(&mut self, fingerprint: &str) -> Result<(), Box<dyn Error>> {
+        let fp_bytes = Self::fingerprint_to_bytes(fingerprint)?;
+
+        self.skel
+            .maps
+            .blocked_tcp_fingerprints
+            .delete(&fp_bytes)?;
+
+        log::info!("Unblocked TCP fingerprint (IPv4): {}", fingerprint);
+        Ok(())
+    }
+
+    fn block_tcp_fingerprint_v6(&mut self, fingerprint: &str) -> Result<(), Box<dyn Error>> {
+        let fp_bytes = Self::fingerprint_to_bytes(fingerprint)?;
+        let flag = 1_u8;
+
+        self.skel
+            .maps
+            .blocked_tcp_fingerprints_v6
+            .update(&fp_bytes, &flag.to_le_bytes(), MapFlags::ANY)?;
+
+        log::info!("Blocked TCP fingerprint (IPv6): {}", fingerprint);
+        Ok(())
+    }
+
+    fn unblock_tcp_fingerprint_v6(&mut self, fingerprint: &str) -> Result<(), Box<dyn Error>> {
+        let fp_bytes = Self::fingerprint_to_bytes(fingerprint)?;
+
+        self.skel
+            .maps
+            .blocked_tcp_fingerprints_v6
+            .delete(&fp_bytes)?;
+
+        log::info!("Unblocked TCP fingerprint (IPv6): {}", fingerprint);
+        Ok(())
+    }
+
+    fn is_tcp_fingerprint_blocked(&self, fingerprint: &str) -> Result<bool, Box<dyn Error>> {
+        let fp_bytes = Self::fingerprint_to_bytes(fingerprint)?;
+
+        if let Some(val) = self
+            .skel
+            .maps
+            .blocked_tcp_fingerprints
+            .lookup(&fp_bytes, MapFlags::ANY)?
+        {
+            if val[0] == 1_u8 {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    fn is_tcp_fingerprint_blocked_v6(&self, fingerprint: &str) -> Result<bool, Box<dyn Error>> {
+        let fp_bytes = Self::fingerprint_to_bytes(fingerprint)?;
+
+        if let Some(val) = self
+            .skel
+            .maps
+            .blocked_tcp_fingerprints_v6
+            .lookup(&fp_bytes, MapFlags::ANY)?
+        {
+            if val[0] == 1_u8 {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
     }
 }

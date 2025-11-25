@@ -177,6 +177,36 @@ struct {
 	__type(value, struct tcp_syn_stats);
 } tcp_syn_stats SEC(".maps");
 
+// Blocked TCP fingerprint maps (only store the fingerprint string, not per-IP)
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 10000);  // Store up to 10k blocked fingerprint patterns
+	__type(key, __u8[14]);        // TCP fingerprint string (14 bytes)
+	__type(value, __u8);          // Flag (1 = blocked)
+} blocked_tcp_fingerprints SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_HASH);
+	__uint(max_entries, 10000);
+	__type(key, __u8[14]);        // TCP fingerprint string (14 bytes)
+	__type(value, __u8);          // Flag (1 = blocked)
+} blocked_tcp_fingerprints_v6 SEC(".maps");
+
+// Statistics for TCP fingerprint blocks
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, __u64);
+} tcp_fingerprint_blocks_ipv4 SEC(".maps");
+
+struct {
+	__uint(type, BPF_MAP_TYPE_ARRAY);
+	__uint(max_entries, 1);
+	__type(key, __u32);
+	__type(value, __u64);
+} tcp_fingerprint_blocks_ipv6 SEC(".maps");
+
 // Maps to track dropped IP addresses with counters
 struct {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);
@@ -318,6 +348,24 @@ static void increment_unique_fingerprints(void)
     }
 }
 
+static void increment_tcp_fingerprint_blocks_ipv4(void)
+{
+    __u32 key = 0;
+    __u64 *value = bpf_map_lookup_elem(&tcp_fingerprint_blocks_ipv4, &key);
+    if (value) {
+        __sync_fetch_and_add(value, 1);
+    }
+}
+
+static void increment_tcp_fingerprint_blocks_ipv6(void)
+{
+    __u32 key = 0;
+    __u64 *value = bpf_map_lookup_elem(&tcp_fingerprint_blocks_ipv6, &key);
+    if (value) {
+        __sync_fetch_and_add(value, 1);
+    }
+}
+
 static int parse_tcp_mss_wscale(struct tcphdr *tcp, void *data_end, __u16 *mss_out, __u8 *wscale_out)
 {
     __u8 *ptr = (__u8 *)tcp + sizeof(struct tcphdr);
@@ -397,6 +445,26 @@ static void generate_tcp_fingerprint(struct tcphdr *tcp, void *data_end, __u16 t
     fingerprint[12] = '0' + ((window / 10) % 10);
     fingerprint[13] = '0' + (window % 10);
     // Note: window_scale is not included due to space constraints
+}
+
+/*
+ * Check if a TCP fingerprint is blocked (IPv4)
+ * Returns true if the fingerprint should be blocked
+ */
+static bool is_tcp_fingerprint_blocked(__u8 *fingerprint)
+{
+    __u8 *blocked = bpf_map_lookup_elem(&blocked_tcp_fingerprints, fingerprint);
+    return (blocked != NULL && *blocked == 1);
+}
+
+/*
+ * Check if a TCP fingerprint is blocked (IPv6)
+ * Returns true if the fingerprint should be blocked
+ */
+static bool is_tcp_fingerprint_blocked_v6(__u8 *fingerprint)
+{
+    __u8 *blocked = bpf_map_lookup_elem(&blocked_tcp_fingerprints_v6, fingerprint);
+    return (blocked != NULL && *blocked == 1);
 }
 
 static void record_tcp_fingerprint(__be32 src_ip, __be16 src_port,
@@ -543,6 +611,19 @@ int arxignis_xdp_filter(struct xdp_md *ctx)
                     // This ensures we capture the initial handshake with MSS/WSCALE
                     if (tcph->syn && !tcph->ack) {
                         increment_tcp_syn_stats();
+                        
+                        // Generate fingerprint to check if blocked
+                        __u8 fingerprint[14] = {0};
+                        generate_tcp_fingerprint(tcph, data_end, iph->ttl, fingerprint);
+                        
+                        // Check if this TCP fingerprint is blocked
+                        if (is_tcp_fingerprint_blocked(fingerprint)) {
+                            increment_tcp_fingerprint_blocks_ipv4();
+                            increment_total_packets_dropped();
+                            increment_dropped_ipv4_address(iph->saddr);
+                            return XDP_DROP;
+                        }
+                        
                         record_tcp_fingerprint(iph->saddr, tcph->source, tcph, data_end, iph->ttl);
                     }
 
@@ -566,6 +647,22 @@ int arxignis_xdp_filter(struct xdp_md *ctx)
                 // Only fingerprint SYN packets (not SYN-ACK) to capture MSS/WSCALE
                 if (tcph->syn && !tcph->ack) {
                     increment_tcp_syn_stats();
+                    
+                    // Generate fingerprint to check if blocked
+                    __u8 fingerprint[14] = {0};
+                    generate_tcp_fingerprint(tcph, data_end, iph->ttl, fingerprint);
+                    
+                    // Check if this TCP fingerprint is blocked
+                    if (is_tcp_fingerprint_blocked(fingerprint)) {
+                        increment_tcp_fingerprint_blocks_ipv4();
+                        increment_total_packets_dropped();
+                        increment_dropped_ipv4_address(iph->saddr);
+                        //bpf_printk("XDP: BLOCKED TCP fingerprint from IPv4 %pI4:%d - FP:%s",
+                        //           &iph->saddr, bpf_ntohs(tcph->source), fingerprint);
+                        return XDP_DROP;
+                    }
+                    
+                    // Record fingerprint for monitoring
                     record_tcp_fingerprint(iph->saddr, tcph->source, tcph, data_end, iph->ttl);
                 }
             }
@@ -590,7 +687,12 @@ int arxignis_xdp_filter(struct xdp_md *ctx)
         struct lpm_key_v6 key6 = {
             .prefixlen = 128,
         };
-        __builtin_memcpy(key6.addr, &ip6h->saddr, 16);
+        // Manual copy for BPF compatibility
+        __u8 *src_addr = (__u8 *)&ip6h->saddr;
+        #pragma unroll
+        for (int i = 0; i < 16; i++) {
+            key6.addr[i] = src_addr[i];
+        }
 
         if (bpf_map_lookup_elem(&banned_ips_v6, &key6)) {
             increment_ipv6_banned_stats();
@@ -651,26 +753,57 @@ int arxignis_xdp_filter(struct xdp_md *ctx)
                 // This ensures we capture the initial handshake with MSS/WSCALE
                 if (tcph->syn && !tcph->ack) {
                     // Skip IPv6 localhost traffic to reduce noise
-                    // Check for ::1 (IPv6 localhost)
-                    __u32 localhost_v6[4] = {0, 0, 0, bpf_htonl(1)};
-                    if (__builtin_memcmp(&ip6h->saddr, localhost_v6, 16) == 0) {
+                    // Check for ::1 (IPv6 localhost) - manual comparison
+                    __u8 *src_addr = (__u8 *)&ip6h->saddr;
+                    bool is_localhost = true;
+                    
+                    // Check first 15 bytes are zero
+                    #pragma unroll
+                    for (int i = 0; i < 15; i++) {
+                        if (src_addr[i] != 0) {
+                            is_localhost = false;
+                            break;
+                        }
+                    }
+                    // Check last byte is 1
+                    if (is_localhost && src_addr[15] == 1) {
                         return XDP_PASS;
                     }
 
                     // Extract TTL from IPv6 hop limit
                     __u16 ttl = ip6h->hop_limit;
 
+                    // Generate fingerprint to check if blocked
+                    __u8 fingerprint[14] = {0};
+                    generate_tcp_fingerprint(tcph, data_end, ttl, fingerprint);
+                    
+                    // Check if this TCP fingerprint is blocked
+                    if (is_tcp_fingerprint_blocked_v6(fingerprint)) {
+                        increment_tcp_fingerprint_blocks_ipv6();
+                        increment_total_packets_dropped();
+                        increment_dropped_ipv6_address(ip6h->saddr);
+                        //bpf_printk("XDP: BLOCKED TCP fingerprint from IPv6 %pI6:%d - FP:%s",
+                        //           &ip6h->saddr, bpf_ntohs(tcph->source), fingerprint);
+                        return XDP_DROP;
+                    }
+
                     // Create IPv6 fingerprint key with full 128-bit address
                     struct tcp_fingerprint_key_v6 key = {0};
                     struct tcp_fingerprint_data data = {0};
                     __u64 timestamp = bpf_ktime_get_ns();
 
-                    // Copy full IPv6 address (16 bytes)
-                    __builtin_memcpy(&key.src_ip, &ip6h->saddr, 16);
+                    // Copy full IPv6 address (16 bytes) - manual copy for BPF
+                    #pragma unroll
+                    for (int i = 0; i < 16; i++) {
+                        key.src_ip[i] = src_addr[i];
+                    }
                     key.src_port = tcph->source;
 
-                    // Generate fingerprint
-                    generate_tcp_fingerprint(tcph, data_end, ttl, key.fingerprint);
+                    // Copy fingerprint to key
+                    #pragma unroll
+                    for (int i = 0; i < 14; i++) {
+                        key.fingerprint[i] = fingerprint[i];
+                    }
 
                     // Check if fingerprint already exists in IPv6 map
                     struct tcp_fingerprint_data *existing = bpf_map_lookup_elem(&tcp_fingerprints_v6, &key);
