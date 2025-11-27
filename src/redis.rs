@@ -26,11 +26,11 @@ impl RedisManager {
         let mut url_with_timeout = redis_url.to_string();
         if !url_with_timeout.contains("connect_timeout=") {
             if url_with_timeout.contains('?') {
-                url_with_timeout.push_str("&connect_timeout=2");
+                url_with_timeout.push_str("&connect_timeout=10");
             } else {
-                url_with_timeout.push_str("?connect_timeout=2");
+                url_with_timeout.push_str("?connect_timeout=10");
             }
-            log::info!("Redis URL updated with connect_timeout=2s: {}", url_with_timeout);
+            log::info!("Redis URL updated with connect_timeout=10s: {}", url_with_timeout);
         }
 
         // If SSL config is provided, ensure URL uses rediss:// protocol
@@ -55,7 +55,7 @@ impl RedisManager {
                 .context("Failed to create Redis client")?
         };
 
-        let connection = timeout(Duration::from_secs(3), client.get_connection_manager())
+        let connection = timeout(Duration::from_secs(15), client.get_connection_manager())
             .await
             .map_err(|_| anyhow::anyhow!("Redis connection manager creation timed out"))?
             .context("Failed to create Redis connection manager")?;
