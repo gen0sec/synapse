@@ -384,34 +384,6 @@ async fn async_main(_args: Args, config: Config) -> Result<()> {
         log::info!("Embedded ACME server disabled (acme.enabled: false)");
     }
 
-    // Start the old Pingora proxy system in a separate thread (non-blocking)
-    // Only start if mode is "proxy" (disabled in agent mode)
-    if config.mode == "proxy" {
-        let bpf_stats_config = config.bpf_stats.clone();
-        let logging_config = config.logging.clone();
-        let arxignis_config = config.arxignis.clone();
-        let network_config = config.network.clone();
-        let tcp_fingerprint_config = config.tcp_fingerprint.clone();
-        let pingora_config = config.pingora.clone();
-        std::thread::spawn(move || {
-            http_proxy::start::run_with_config(Some(crate::cli::Config {
-                mode: "proxy".to_string(),
-                redis: Default::default(),
-                network: network_config,
-                arxignis: arxignis_config,
-                content_scanning: Default::default(),
-                logging: logging_config,
-                bpf_stats: bpf_stats_config,
-                tcp_fingerprint: tcp_fingerprint_config,
-                daemon: Default::default(),
-                pingora: pingora_config,
-                acme: Default::default(),
-            }));
-        });
-    } else {
-        log::info!("Pingora proxy system disabled (mode: {})", config.mode);
-    }
-
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     // Initialize Redis manager if Redis URL is provided
@@ -516,7 +488,7 @@ async fn async_main(_args: Args, config: Config) -> Result<()> {
         enabled: config.arxignis.log_sending_enabled,
         base_url: config.arxignis.base_url.clone(),
         api_key: config.arxignis.api_key.clone(),
-        batch_size_limit: 1000,        // Default: 1000 logs per batch (API limit)
+        batch_size_limit: 5000,        // Default: 5000 logs per batch
         batch_size_bytes: 5 * 1024 * 1024, // Default: 5MB
         batch_timeout_secs: 10,        // Default: 10 seconds
         include_request_body: false,   // Default: disabled
@@ -553,7 +525,9 @@ async fn async_main(_args: Args, config: Config) -> Result<()> {
             config.arxignis.base_url.clone(),
             config.arxignis.api_key.clone(),
         ).await {
-            log::warn!("Failed to initialize HTTP filter with config: {}", e);
+            log::error!("Failed to initialize HTTP filter with config: {}", e);
+            log::error!("Aborting startup because WAF config could not be loaded");
+            return Err(e);
         }
 
         // Initialize threat intelligence client
@@ -626,6 +600,34 @@ async fn async_main(_args: Args, config: Config) -> Result<()> {
         }
     } else {
         log::info!("Skipping config worker (no API credentials provided)");
+    }
+
+    // Start the old Pingora proxy system in a separate thread (non-blocking)
+    // Only start if mode is "proxy" (disabled in agent mode)
+    if config.mode == "proxy" {
+        let bpf_stats_config = config.bpf_stats.clone();
+        let logging_config = config.logging.clone();
+        let arxignis_config = config.arxignis.clone();
+        let network_config = config.network.clone();
+        let tcp_fingerprint_config = config.tcp_fingerprint.clone();
+        let pingora_config = config.pingora.clone();
+        std::thread::spawn(move || {
+            http_proxy::start::run_with_config(Some(crate::cli::Config {
+                mode: "proxy".to_string(),
+                redis: Default::default(),
+                network: network_config,
+                arxignis: arxignis_config,
+                content_scanning: Default::default(),
+                logging: logging_config,
+                bpf_stats: bpf_stats_config,
+                tcp_fingerprint: tcp_fingerprint_config,
+                daemon: Default::default(),
+                pingora: pingora_config,
+                acme: Default::default(),
+            }));
+        });
+    } else {
+        log::info!("Pingora proxy system disabled (mode: {})", config.mode);
     }
 
     // Start BPF statistics logging task

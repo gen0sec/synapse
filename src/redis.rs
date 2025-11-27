@@ -3,6 +3,7 @@ use redis::aio::ConnectionManager;
 use redis::Client;
 use std::sync::Arc;
 use tokio::sync::OnceCell;
+use tokio::time::{timeout, Duration};
 
 /// Global Redis connection manager
 static REDIS_MANAGER: OnceCell<Arc<RedisManager>> = OnceCell::const_new();
@@ -21,17 +22,28 @@ impl RedisManager {
     pub async fn init(redis_url: &str, prefix: String, ssl_config: Option<&crate::cli::RedisSslConfig>) -> Result<()> {
         log::info!("Initializing Redis manager with URL: {}", redis_url);
 
+        // Add a short connect timeout so startup doesn't block for minutes if Redis is unreachable
+        let mut url_with_timeout = redis_url.to_string();
+        if !url_with_timeout.contains("connect_timeout=") {
+            if url_with_timeout.contains('?') {
+                url_with_timeout.push_str("&connect_timeout=10");
+            } else {
+                url_with_timeout.push_str("?connect_timeout=10");
+            }
+            log::info!("Redis URL updated with connect_timeout=10s: {}", url_with_timeout);
+        }
+
         // If SSL config is provided, ensure URL uses rediss:// protocol
         let redis_url = if let Some(_ssl_config) = ssl_config {
-            if redis_url.starts_with("redis://") && !redis_url.starts_with("rediss://") {
-                let converted_url = redis_url.replacen("redis://", "rediss://", 1);
+            if url_with_timeout.starts_with("redis://") && !url_with_timeout.starts_with("rediss://") {
+                let converted_url = url_with_timeout.replacen("redis://", "rediss://", 1);
                 log::info!("SSL config provided, converting URL from redis:// to rediss://: {}", converted_url);
                 converted_url
             } else {
-                redis_url.to_string()
+                url_with_timeout.to_string()
             }
         } else {
-            redis_url.to_string()
+            url_with_timeout.to_string()
         };
 
         let client = if let Some(ssl_config) = ssl_config {
@@ -43,20 +55,25 @@ impl RedisManager {
                 .context("Failed to create Redis client")?
         };
 
-        let connection = client
-            .get_connection_manager()
+        let connection = timeout(Duration::from_secs(15), client.get_connection_manager())
             .await
+            .map_err(|_| anyhow::anyhow!("Redis connection manager creation timed out"))?
             .context("Failed to create Redis connection manager")?;
 
         log::info!("Redis connection manager created successfully with prefix: {}", prefix);
 
         // Test the connection
         let mut test_conn = connection.clone();
-        match redis::cmd("PING").query_async::<String>(&mut test_conn).await {
-            Ok(_) => log::info!("Redis connection test successful"),
-            Err(e) => {
+        let ping_result = timeout(Duration::from_secs(3), redis::cmd("PING").query_async::<String>(&mut test_conn)).await;
+        match ping_result {
+            Ok(Ok(_)) => log::info!("Redis connection test successful"),
+            Ok(Err(e)) => {
                 log::warn!("Redis connection test failed: {}", e);
                 return Err(anyhow::anyhow!("Redis connection test failed: {}", e));
+            }
+            Err(_) => {
+                log::warn!("Redis connection test timed out");
+                return Err(anyhow::anyhow!("Redis connection test timed out"));
             }
         }
 
