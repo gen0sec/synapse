@@ -1,4 +1,7 @@
-use std::{error::Error, net::{Ipv4Addr, Ipv6Addr}};
+use std::{
+    error::Error,
+    net::{Ipv4Addr, Ipv6Addr},
+};
 
 use libbpf_rs::{MapCore, MapFlags};
 
@@ -40,11 +43,11 @@ impl<'a> MOATFirewall<'a> {
     fn fingerprint_to_bytes(fingerprint: &str) -> Result<[u8; 14], Box<dyn Error>> {
         let mut bytes = [0u8; 14];
         let fp_bytes = fingerprint.as_bytes();
-        
+
         // Copy up to 14 bytes
         let copy_len = std::cmp::min(fp_bytes.len(), 14);
         bytes[..copy_len].copy_from_slice(&fp_bytes[..copy_len]);
-        
+
         Ok(bytes)
     }
 }
@@ -106,10 +109,11 @@ impl<'a> Firewall for MOATFirewall<'a> {
         let ip_bytes = &bpf_utils::convert_ipv6_into_bpf_map_key_bytes(ip, prefixlen);
         let flag = 1_u8;
 
-        self.skel
-            .maps
-            .recently_banned_ips_v6
-            .update(ip_bytes, &flag.to_le_bytes(), MapFlags::ANY)?;
+        self.skel.maps.recently_banned_ips_v6.update(
+            ip_bytes,
+            &flag.to_le_bytes(),
+            MapFlags::ANY,
+        )?;
 
         Ok(())
     }
@@ -157,10 +161,11 @@ impl<'a> Firewall for MOATFirewall<'a> {
         let fp_bytes = Self::fingerprint_to_bytes(fingerprint)?;
         let flag = 1_u8;
 
-        self.skel
-            .maps
-            .blocked_tcp_fingerprints
-            .update(&fp_bytes, &flag.to_le_bytes(), MapFlags::ANY)?;
+        self.skel.maps.blocked_tcp_fingerprints.update(
+            &fp_bytes,
+            &flag.to_le_bytes(),
+            MapFlags::ANY,
+        )?;
 
         log::info!("Blocked TCP fingerprint (IPv4): {}", fingerprint);
         Ok(())
@@ -169,10 +174,7 @@ impl<'a> Firewall for MOATFirewall<'a> {
     fn unblock_tcp_fingerprint(&mut self, fingerprint: &str) -> Result<(), Box<dyn Error>> {
         let fp_bytes = Self::fingerprint_to_bytes(fingerprint)?;
 
-        self.skel
-            .maps
-            .blocked_tcp_fingerprints
-            .delete(&fp_bytes)?;
+        self.skel.maps.blocked_tcp_fingerprints.delete(&fp_bytes)?;
 
         log::info!("Unblocked TCP fingerprint (IPv4): {}", fingerprint);
         Ok(())
@@ -182,10 +184,11 @@ impl<'a> Firewall for MOATFirewall<'a> {
         let fp_bytes = Self::fingerprint_to_bytes(fingerprint)?;
         let flag = 1_u8;
 
-        self.skel
-            .maps
-            .blocked_tcp_fingerprints_v6
-            .update(&fp_bytes, &flag.to_le_bytes(), MapFlags::ANY)?;
+        self.skel.maps.blocked_tcp_fingerprints_v6.update(
+            &fp_bytes,
+            &flag.to_le_bytes(),
+            MapFlags::ANY,
+        )?;
 
         log::info!("Blocked TCP fingerprint (IPv6): {}", fingerprint);
         Ok(())

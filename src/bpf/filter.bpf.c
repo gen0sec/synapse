@@ -70,6 +70,18 @@ struct tcp_syn_stats {
     __u64 last_reset;
 };
 
+struct src_port_key_v4 {
+    __be32 addr;
+    __be16 port;
+    __u8 proto;
+};
+
+struct src_port_key_v6 {
+    __u8 addr[16];
+    __be16 port;
+    __u8 proto;
+};
+
 // IPv4 maps: permanently banned and recently banned
 struct {
 	__uint(type, BPF_MAP_TYPE_LPM_TRIE);
@@ -221,6 +233,21 @@ struct {
     __type(key, __u8[16]);      // IPv6 address
     __type(value, __u64);        // Drop count
 } dropped_ipv6_addresses SEC(".maps");
+
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 4096);
+    __type(key, struct src_port_key_v4);
+    __type(value, __u8);
+} banned_src_ports_v4 SEC(".maps");
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 4096);
+    __type(key, struct src_port_key_v6);
+    __type(value, __u8);
+} banned_src_ports_v6 SEC(".maps");
 
 /*
  * Helper for bounds checking and advancing a cursor.
@@ -668,6 +695,36 @@ int arxignis_xdp_filter(struct xdp_md *ctx)
             }
         }
 
+        // Check IPv4 port bans
+        if (iph->protocol == IPPROTO_TCP || iph->protocol == IPPROTO_UDP) {
+            void *port_cursor = cursor;
+            __be16 src_port = 0;
+
+            if (iph->protocol == IPPROTO_TCP) {
+                struct tcphdr *tcph_tmp = parse_and_advance(&port_cursor, data_end, sizeof(*tcph_tmp));
+                if (!tcph_tmp)
+                    return XDP_PASS;
+                src_port = tcph_tmp->source;
+            } else {
+                struct udphdr *udph_tmp = parse_and_advance(&port_cursor, data_end, sizeof(*udph_tmp));
+                if (!udph_tmp)
+                    return XDP_PASS;
+                src_port = udph_tmp->source;
+            }
+
+            struct src_port_key_v4 port_key = {
+                .addr = iph->saddr,
+                .port = src_port,
+                .proto = iph->protocol,
+            };
+
+            if (bpf_map_lookup_elem(&banned_src_ports_v4, &port_key)) {
+                increment_total_packets_dropped();
+                increment_dropped_ipv4_address(iph->saddr);
+                return XDP_DROP;
+            }
+        }
+
         return XDP_PASS;
     }
     else if (h_proto == bpf_htons(ETH_P_IPV6)) {
@@ -844,6 +901,38 @@ int arxignis_xdp_filter(struct xdp_md *ctx)
                         //           &ip6h->saddr, bpf_ntohs(tcph->source), ttl, data.mss, data.window_scale, data.window_size);
                     }
                 }
+            }
+        }
+
+        // Check IPv6 port bans
+        if (ip6h->nexthdr == IPPROTO_TCP || ip6h->nexthdr == IPPROTO_UDP) {
+            void *port_cursor = cursor;
+            __be16 src_port = 0;
+
+            if (ip6h->nexthdr == IPPROTO_TCP) {
+                struct tcphdr *tcph_tmp = parse_and_advance(&port_cursor, data_end, sizeof(*tcph_tmp));
+                if (!tcph_tmp)
+                    return XDP_PASS;
+                src_port = tcph_tmp->source;
+            } else {
+                struct udphdr *udph_tmp = parse_and_advance(&port_cursor, data_end, sizeof(*udph_tmp));
+                if (!udph_tmp)
+                    return XDP_PASS;
+                src_port = udph_tmp->source;
+            }
+
+            struct src_port_key_v6 port_key6 = {0};
+            #pragma unroll
+            for (int i = 0; i < 16; i++) {
+                port_key6.addr[i] = ((__u8 *)&ip6h->saddr)[i];
+            }
+            port_key6.port = src_port;
+            port_key6.proto = ip6h->nexthdr;
+
+            if (bpf_map_lookup_elem(&banned_src_ports_v6, &port_key6)) {
+                increment_total_packets_dropped();
+                increment_dropped_ipv6_address(ip6h->saddr);
+                return XDP_DROP;
             }
         }
 
