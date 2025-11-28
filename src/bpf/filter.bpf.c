@@ -73,13 +73,11 @@ struct tcp_syn_stats {
 struct src_port_key_v4 {
     __be32 addr;
     __be16 port;
-    __u8 proto;
 };
 
 struct src_port_key_v6 {
     __u8 addr[16];
     __be16 port;
-    __u8 proto;
 };
 
 // IPv4 maps: permanently banned and recently banned
@@ -240,14 +238,14 @@ struct {
     __uint(max_entries, 4096);
     __type(key, struct src_port_key_v4);
     __type(value, __u8);
-} banned_src_ports_v4 SEC(".maps");
+} banned_ipv4_address_ports SEC(".maps");
 
 struct {
     __uint(type, BPF_MAP_TYPE_HASH);
     __uint(max_entries, 4096);
     __type(key, struct src_port_key_v6);
     __type(value, __u8);
-} banned_src_ports_v6 SEC(".maps");
+} banned_ipv6_address_ports SEC(".maps");
 
 /*
  * Helper for bounds checking and advancing a cursor.
@@ -715,10 +713,9 @@ int arxignis_xdp_filter(struct xdp_md *ctx)
             struct src_port_key_v4 port_key = {
                 .addr = iph->saddr,
                 .port = src_port,
-                .proto = iph->protocol,
             };
 
-            if (bpf_map_lookup_elem(&banned_src_ports_v4, &port_key)) {
+            if (bpf_map_lookup_elem(&banned_ipv4_address_ports, &port_key)) {
                 increment_total_packets_dropped();
                 increment_dropped_ipv4_address(iph->saddr);
                 return XDP_DROP;
@@ -927,9 +924,8 @@ int arxignis_xdp_filter(struct xdp_md *ctx)
                 port_key6.addr[i] = ((__u8 *)&ip6h->saddr)[i];
             }
             port_key6.port = src_port;
-            port_key6.proto = ip6h->nexthdr;
 
-            if (bpf_map_lookup_elem(&banned_src_ports_v6, &port_key6)) {
+            if (bpf_map_lookup_elem(&banned_ipv6_address_ports, &port_key6)) {
                 increment_total_packets_dropped();
                 increment_dropped_ipv6_address(ip6h->saddr);
                 return XDP_DROP;
