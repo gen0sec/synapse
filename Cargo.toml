@@ -68,7 +68,7 @@ flate2 = "1.0"
 log = "0.4.28"
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
 jsonwebtoken = { version = "10.1", features = ["rust_crypto"] }
-uuid = { version = "1.0", features = ["v4", "serde"] }
+uuid = { version = "1.19", features = ["v4", "serde"] }
 url = "2.5"
 clamav-tcp = "0.2"
 multer = "3.0"
