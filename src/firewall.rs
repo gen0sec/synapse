@@ -1,4 +1,7 @@
-use std::{error::Error, net::{Ipv4Addr, Ipv6Addr}};
+use std::{
+    error::Error,
+    net::{Ipv4Addr, Ipv6Addr},
+};
 
 use libbpf_rs::{MapCore, MapFlags};
 
@@ -23,6 +26,70 @@ pub trait Firewall {
     fn unblock_tcp_fingerprint_v6(&mut self, fingerprint: &str) -> Result<(), Box<dyn Error>>;
     fn is_tcp_fingerprint_blocked(&self, fingerprint: &str) -> Result<bool, Box<dyn Error>>;
     fn is_tcp_fingerprint_blocked_v6(&self, fingerprint: &str) -> Result<bool, Box<dyn Error>>;
+
+    fn ban_ipv4_port_inbound(&mut self, ip: Ipv4Addr, port: u16) -> Result<(), Box<dyn Error>>;
+    fn unban_ipv4_port_inbound(&mut self, ip: Ipv4Addr, port: u16) -> Result<(), Box<dyn Error>>;
+    fn is_ipv4_port_inbound_banned(
+        &mut self,
+        ip: Ipv4Addr,
+        port: u16,
+    ) -> Result<bool, Box<dyn Error>>;
+
+    fn ban_ipv4_port_outbound(&mut self, ip: Ipv4Addr, port: u16) -> Result<(), Box<dyn Error>>;
+    fn unban_ipv4_port_outbound(&mut self, ip: Ipv4Addr, port: u16) -> Result<(), Box<dyn Error>>;
+    fn is_ipv4_port_outbound_banned(
+        &mut self,
+        ip: Ipv4Addr,
+        port: u16,
+    ) -> Result<bool, Box<dyn Error>>;
+
+    fn ban_ipv4_port_bidirectional(
+        &mut self,
+        ip: Ipv4Addr,
+        port: u16,
+    ) -> Result<(), Box<dyn Error>>;
+    fn unban_ipv4_port_bidirectional(
+        &mut self,
+        ip: Ipv4Addr,
+        port: u16,
+    ) -> Result<(), Box<dyn Error>>;
+    fn is_ipv4_port_bidirectional_banned(
+        &mut self,
+        ip: Ipv4Addr,
+        port: u16,
+    ) -> Result<bool, Box<dyn Error>>;
+
+    fn ban_ipv6_port_inbound(&mut self, ip: Ipv6Addr, port: u16) -> Result<(), Box<dyn Error>>;
+    fn unban_ipv6_port_inbound(&mut self, ip: Ipv6Addr, port: u16) -> Result<(), Box<dyn Error>>;
+    fn is_ipv6_port_inbound_banned(
+        &mut self,
+        ip: Ipv6Addr,
+        port: u16,
+    ) -> Result<bool, Box<dyn Error>>;
+
+    fn ban_ipv6_port_outbound(&mut self, ip: Ipv6Addr, port: u16) -> Result<(), Box<dyn Error>>;
+    fn unban_ipv6_port_outbound(&mut self, ip: Ipv6Addr, port: u16) -> Result<(), Box<dyn Error>>;
+    fn is_ipv6_port_outbound_banned(
+        &mut self,
+        ip: Ipv6Addr,
+        port: u16,
+    ) -> Result<bool, Box<dyn Error>>;
+
+    fn ban_ipv6_port_bidirectional(
+        &mut self,
+        ip: Ipv6Addr,
+        port: u16,
+    ) -> Result<(), Box<dyn Error>>;
+    fn unban_ipv6_port_bidirectional(
+        &mut self,
+        ip: Ipv6Addr,
+        port: u16,
+    ) -> Result<(), Box<dyn Error>>;
+    fn is_ipv6_port_bidirectional_banned(
+        &mut self,
+        ip: Ipv6Addr,
+        port: u16,
+    ) -> Result<bool, Box<dyn Error>>;
 }
 
 pub struct MOATFirewall<'a> {
@@ -40,11 +107,11 @@ impl<'a> MOATFirewall<'a> {
     fn fingerprint_to_bytes(fingerprint: &str) -> Result<[u8; 14], Box<dyn Error>> {
         let mut bytes = [0u8; 14];
         let fp_bytes = fingerprint.as_bytes();
-        
+
         // Copy up to 14 bytes
         let copy_len = std::cmp::min(fp_bytes.len(), 14);
         bytes[..copy_len].copy_from_slice(&fp_bytes[..copy_len]);
-        
+
         Ok(bytes)
     }
 }
@@ -106,10 +173,11 @@ impl<'a> Firewall for MOATFirewall<'a> {
         let ip_bytes = &bpf_utils::convert_ipv6_into_bpf_map_key_bytes(ip, prefixlen);
         let flag = 1_u8;
 
-        self.skel
-            .maps
-            .recently_banned_ips_v6
-            .update(ip_bytes, &flag.to_le_bytes(), MapFlags::ANY)?;
+        self.skel.maps.recently_banned_ips_v6.update(
+            ip_bytes,
+            &flag.to_le_bytes(),
+            MapFlags::ANY,
+        )?;
 
         Ok(())
     }
@@ -157,10 +225,11 @@ impl<'a> Firewall for MOATFirewall<'a> {
         let fp_bytes = Self::fingerprint_to_bytes(fingerprint)?;
         let flag = 1_u8;
 
-        self.skel
-            .maps
-            .blocked_tcp_fingerprints
-            .update(&fp_bytes, &flag.to_le_bytes(), MapFlags::ANY)?;
+        self.skel.maps.blocked_tcp_fingerprints.update(
+            &fp_bytes,
+            &flag.to_le_bytes(),
+            MapFlags::ANY,
+        )?;
 
         log::info!("Blocked TCP fingerprint (IPv4): {}", fingerprint);
         Ok(())
@@ -169,10 +238,7 @@ impl<'a> Firewall for MOATFirewall<'a> {
     fn unblock_tcp_fingerprint(&mut self, fingerprint: &str) -> Result<(), Box<dyn Error>> {
         let fp_bytes = Self::fingerprint_to_bytes(fingerprint)?;
 
-        self.skel
-            .maps
-            .blocked_tcp_fingerprints
-            .delete(&fp_bytes)?;
+        self.skel.maps.blocked_tcp_fingerprints.delete(&fp_bytes)?;
 
         log::info!("Unblocked TCP fingerprint (IPv4): {}", fingerprint);
         Ok(())
@@ -182,10 +248,11 @@ impl<'a> Firewall for MOATFirewall<'a> {
         let fp_bytes = Self::fingerprint_to_bytes(fingerprint)?;
         let flag = 1_u8;
 
-        self.skel
-            .maps
-            .blocked_tcp_fingerprints_v6
-            .update(&fp_bytes, &flag.to_le_bytes(), MapFlags::ANY)?;
+        self.skel.maps.blocked_tcp_fingerprints_v6.update(
+            &fp_bytes,
+            &flag.to_le_bytes(),
+            MapFlags::ANY,
+        )?;
 
         log::info!("Blocked TCP fingerprint (IPv6): {}", fingerprint);
         Ok(())
@@ -211,10 +278,9 @@ impl<'a> Firewall for MOATFirewall<'a> {
             .maps
             .blocked_tcp_fingerprints
             .lookup(&fp_bytes, MapFlags::ANY)?
+            && val[0] == 1_u8
         {
-            if val[0] == 1_u8 {
-                return Ok(true);
-            }
+            return Ok(true);
         }
 
         Ok(false)
@@ -228,12 +294,227 @@ impl<'a> Firewall for MOATFirewall<'a> {
             .maps
             .blocked_tcp_fingerprints_v6
             .lookup(&fp_bytes, MapFlags::ANY)?
+            && val[0] == 1_u8
         {
-            if val[0] == 1_u8 {
-                return Ok(true);
-            }
+            return Ok(true);
         }
 
         Ok(false)
+    }
+
+    fn ban_ipv4_port_inbound(&mut self, ip: Ipv4Addr, port: u16) -> Result<(), Box<dyn Error>> {
+        let key_bytes = bpf_utils::convert_ip_port_into_bpf_map_key_bytes(ip, port);
+
+        self.skel.maps.banned_inbound_ipv4_address_ports.update(
+            &key_bytes,
+            &[1u8],
+            MapFlags::ANY,
+        )?;
+
+        Ok(())
+    }
+
+    fn unban_ipv4_port_inbound(&mut self, ip: Ipv4Addr, port: u16) -> Result<(), Box<dyn Error>> {
+        let key_bytes = bpf_utils::convert_ip_port_into_bpf_map_key_bytes(ip, port);
+
+        self.skel
+            .maps
+            .banned_inbound_ipv4_address_ports
+            .delete(&key_bytes)?;
+
+        Ok(())
+    }
+
+    fn is_ipv4_port_inbound_banned(
+        &mut self,
+        ip: Ipv4Addr,
+        port: u16,
+    ) -> Result<bool, Box<dyn Error>> {
+        let key_bytes = bpf_utils::convert_ip_port_into_bpf_map_key_bytes(ip, port);
+
+        let res = self
+            .skel
+            .maps
+            .banned_inbound_ipv4_address_ports
+            .lookup(&key_bytes, MapFlags::ANY)?;
+
+        Ok(res.is_some())
+    }
+
+    fn ban_ipv4_port_outbound(&mut self, ip: Ipv4Addr, port: u16) -> Result<(), Box<dyn Error>> {
+        let key_bytes = bpf_utils::convert_ip_port_into_bpf_map_key_bytes(ip, port);
+
+        self.skel.maps.banned_outbound_ipv4_address_ports.update(
+            &key_bytes,
+            &[1u8],
+            MapFlags::ANY,
+        )?;
+
+        Ok(())
+    }
+
+    fn unban_ipv4_port_outbound(&mut self, ip: Ipv4Addr, port: u16) -> Result<(), Box<dyn Error>> {
+        let key_bytes = bpf_utils::convert_ip_port_into_bpf_map_key_bytes(ip, port);
+
+        self.skel
+            .maps
+            .banned_outbound_ipv4_address_ports
+            .delete(&key_bytes)?;
+
+        Ok(())
+    }
+
+    fn is_ipv4_port_outbound_banned(
+        &mut self,
+        ip: Ipv4Addr,
+        port: u16,
+    ) -> Result<bool, Box<dyn Error>> {
+        let key_bytes = bpf_utils::convert_ip_port_into_bpf_map_key_bytes(ip, port);
+
+        let res = self
+            .skel
+            .maps
+            .banned_outbound_ipv4_address_ports
+            .lookup(&key_bytes, MapFlags::ANY)?;
+
+        Ok(res.is_some())
+    }
+
+    fn ban_ipv4_port_bidirectional(
+        &mut self,
+        ip: Ipv4Addr,
+        port: u16,
+    ) -> Result<(), Box<dyn Error>> {
+        self.ban_ipv4_port_inbound(ip, port)?;
+        self.ban_ipv4_port_outbound(ip, port)?;
+        Ok(())
+    }
+
+    fn unban_ipv4_port_bidirectional(
+        &mut self,
+        ip: Ipv4Addr,
+        port: u16,
+    ) -> Result<(), Box<dyn Error>> {
+        self.unban_ipv4_port_inbound(ip, port)?;
+        self.unban_ipv4_port_outbound(ip, port)?;
+        Ok(())
+    }
+
+    fn is_ipv4_port_bidirectional_banned(
+        &mut self,
+        ip: Ipv4Addr,
+        port: u16,
+    ) -> Result<bool, Box<dyn Error>> {
+        let inbound = self.is_ipv4_port_inbound_banned(ip, port)?;
+        let outbound = self.is_ipv4_port_outbound_banned(ip, port)?;
+        Ok(inbound && outbound)
+    }
+
+    fn ban_ipv6_port_inbound(&mut self, ip: Ipv6Addr, port: u16) -> Result<(), Box<dyn Error>> {
+        let key_bytes = bpf_utils::convert_ipv6_port_into_map_key_bytes(ip, port);
+
+        self.skel.maps.banned_inbound_ipv6_address_ports.update(
+            &key_bytes,
+            &[1u8],
+            MapFlags::ANY,
+        )?;
+
+        Ok(())
+    }
+
+    fn unban_ipv6_port_inbound(&mut self, ip: Ipv6Addr, port: u16) -> Result<(), Box<dyn Error>> {
+        let key_bytes = bpf_utils::convert_ipv6_port_into_map_key_bytes(ip, port);
+
+        self.skel
+            .maps
+            .banned_inbound_ipv6_address_ports
+            .delete(&key_bytes)?;
+
+        Ok(())
+    }
+
+    fn is_ipv6_port_inbound_banned(
+        &mut self,
+        ip: Ipv6Addr,
+        port: u16,
+    ) -> Result<bool, Box<dyn Error>> {
+        let key_bytes = bpf_utils::convert_ipv6_port_into_map_key_bytes(ip, port);
+
+        let res = self
+            .skel
+            .maps
+            .banned_inbound_ipv6_address_ports
+            .lookup(&key_bytes, MapFlags::ANY)?;
+
+        Ok(res.is_some())
+    }
+
+    fn ban_ipv6_port_outbound(&mut self, ip: Ipv6Addr, port: u16) -> Result<(), Box<dyn Error>> {
+        let key_bytes = bpf_utils::convert_ipv6_port_into_map_key_bytes(ip, port);
+
+        self.skel.maps.banned_outbound_ipv6_address_ports.update(
+            &key_bytes,
+            &[1u8],
+            MapFlags::ANY,
+        )?;
+
+        Ok(())
+    }
+
+    fn unban_ipv6_port_outbound(&mut self, ip: Ipv6Addr, port: u16) -> Result<(), Box<dyn Error>> {
+        let key_bytes = bpf_utils::convert_ipv6_port_into_map_key_bytes(ip, port);
+
+        self.skel
+            .maps
+            .banned_outbound_ipv6_address_ports
+            .delete(&key_bytes)?;
+
+        Ok(())
+    }
+
+    fn is_ipv6_port_outbound_banned(
+        &mut self,
+        ip: Ipv6Addr,
+        port: u16,
+    ) -> Result<bool, Box<dyn Error>> {
+        let key_bytes = bpf_utils::convert_ipv6_port_into_map_key_bytes(ip, port);
+
+        let res = self
+            .skel
+            .maps
+            .banned_outbound_ipv6_address_ports
+            .lookup(&key_bytes, MapFlags::ANY)?;
+
+        Ok(res.is_some())
+    }
+
+    fn ban_ipv6_port_bidirectional(
+        &mut self,
+        ip: Ipv6Addr,
+        port: u16,
+    ) -> Result<(), Box<dyn Error>> {
+        self.ban_ipv6_port_inbound(ip, port)?;
+        self.ban_ipv6_port_outbound(ip, port)?;
+        Ok(())
+    }
+
+    fn unban_ipv6_port_bidirectional(
+        &mut self,
+        ip: Ipv6Addr,
+        port: u16,
+    ) -> Result<(), Box<dyn Error>> {
+        self.unban_ipv6_port_inbound(ip, port)?;
+        self.unban_ipv6_port_outbound(ip, port)?;
+        Ok(())
+    }
+
+    fn is_ipv6_port_bidirectional_banned(
+        &mut self,
+        ip: Ipv6Addr,
+        port: u16,
+    ) -> Result<bool, Box<dyn Error>> {
+        let inbound = self.is_ipv6_port_inbound_banned(ip, port)?;
+        let outbound = self.is_ipv6_port_outbound_banned(ip, port)?;
+        Ok(inbound && outbound)
     }
 }
