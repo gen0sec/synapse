@@ -46,6 +46,8 @@ pub struct Config {
     #[serde(default)]
     pub tcp_fingerprint: TcpFingerprintConfig,
     #[serde(default)]
+    pub file_monitor: FileMonitorConfig,
+    #[serde(default)]
     pub daemon: DaemonConfig,
     #[serde(default)]
     pub pingora: PingoraConfig,
@@ -189,6 +191,30 @@ pub struct LoggingConfig {
     pub level: String,
 }
 
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+pub struct FileMonitorConfig {
+    /// Turn file integrity monitor on/off
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Directories to watch for changes
+    #[serde(default)]
+    pub paths: Vec<String>,
+
+    /// Whether to watch subdirectories too
+    #[serde(default = "default_recursive")]
+    pub recursive: bool,
+
+    /// Path to rsure store file (baseline hashes)
+    /// e.g. /var/lib/gen0sec/file_integrity.rsure
+    #[serde(default)]
+    pub rsure_store_path: Option<String>,
+}
+
+fn default_recursive() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct CaptchaConfig {
     #[serde(default)]
@@ -260,6 +286,7 @@ impl Config {
             },
             bpf_stats: BpfStatsConfig::default(),
             tcp_fingerprint: TcpFingerprintConfig::default(),
+            file_monitor: FileMonitorConfig::default(),
             daemon: DaemonConfig::default(),
             pingora: PingoraConfig::default(),
             acme: AcmeConfig::default(),
@@ -333,6 +360,11 @@ impl Config {
         }
         if !args.redis_prefix.is_empty() && args.redis_prefix != "ax:synapse" {
             self.redis.prefix = args.redis_prefix.clone();
+        }
+
+        if !args.file_monitor_paths.is_empty() {
+            self.file_monitor.enabled = true;
+            self.file_monitor.paths.extend(args.file_monitor_paths.clone());
         }
     }
 
@@ -616,6 +648,10 @@ pub struct Args {
     /// Captcha validation cache TTL in seconds
     #[arg(long, default_value = "300")]
     pub captcha_cache_ttl: u64,
+
+    /// Extra directories to monitor for file integrity (comma or multi-use)
+    #[arg(long = "file-monitor-path", value_delimiter = ',')]
+    pub file_monitor_paths: Vec<String>,
 
     /// Enable PROXY protocol support for TCP connections
     #[arg(long, default_value_t = false)]

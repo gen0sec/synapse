@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 
 use crate::http_client;
+use crate::file_integrity::FileChangeEvent;
 
 /// Maximum batch size allowed by the API server
 const API_MAX_BATCH_SIZE: usize = 1000;
@@ -70,6 +71,8 @@ pub enum UnifiedEvent {
     DroppedIp(crate::bpf_stats::DroppedIpEvent),
     #[serde(rename = "tcp_fingerprint")]
     TcpFingerprint(crate::utils::tcp_fingerprint::TcpFingerprintEvent),
+    #[serde(rename = "file_change")]
+    FileChange(FileChangeEvent),
 }
 
 impl UnifiedEvent {
@@ -79,6 +82,7 @@ impl UnifiedEvent {
             UnifiedEvent::HttpAccessLog(_) => "http_access_log",
             UnifiedEvent::DroppedIp(_) => "dropped_ip",
             UnifiedEvent::TcpFingerprint(_) => "tcp_fingerprint",
+            UnifiedEvent::FileChange(_) => "file_change",
         }
     }
 
@@ -88,6 +92,7 @@ impl UnifiedEvent {
             UnifiedEvent::HttpAccessLog(event) => event.timestamp,
             UnifiedEvent::DroppedIp(event) => event.timestamp,
             UnifiedEvent::TcpFingerprint(event) => event.timestamp,
+            UnifiedEvent::FileChange(event) => event.timestamp,
         }
     }
 
@@ -171,17 +176,21 @@ impl EventBuffer {
 
 /// Estimate the size of an event in bytes
 fn estimate_event_size(event: &UnifiedEvent) -> usize {
-    // Rough estimation based on JSON serialization
-    // This is an approximation - actual size may vary
-    let base_size = 500; // Base overhead
+    let base_size = 512;
 
     match event {
         UnifiedEvent::HttpAccessLog(log) => {
-            base_size + log.http.body.len() + log.response.body.len() +
-            log.http.headers.len() * 50 // Rough estimate for headers
+            base_size + log.http.body.len() + log.http.headers.len() * 50
         }
-        UnifiedEvent::DroppedIp(_) => base_size + 200, // Dropped IP events are relatively small
-        UnifiedEvent::TcpFingerprint(_) => base_size + 100, // TCP fingerprint events are small
+        UnifiedEvent::DroppedIp(_) => base_size + 200,
+        UnifiedEvent::TcpFingerprint(_) => base_size + 100,
+        UnifiedEvent::FileChange(e) => {
+            base_size
+                + e.root_path.len()
+                + e.file_path.len()
+                + e.old_hash.as_ref().map_or(0, String::len)
+                + e.new_hash.as_ref().map_or(0, String::len)
+        }
     }
 }
 
