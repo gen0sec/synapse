@@ -1199,9 +1199,14 @@ async fn request_cert_internal(config: &Config) -> AtomicServerResult<()> {
                 // For wildcard domains (*.example.com), use the base domain (example.com)
                 // For non-wildcard domains, use the domain as-is
                 // Use the is_wildcard flag computed earlier, or check the domain from authorization
-                let base_domain = if is_wildcard {
-                    // For wildcard, strip the *. prefix to get base domain
+                let base_domain = if domain.starts_with("*.") {
+                    // Domain from authorization starts with *. - strip it
                     domain.strip_prefix("*.").unwrap_or(&domain)
+                } else if is_wildcard {
+                    // is_wildcard is true but domain doesn't start with *.
+                    // This can happen if ACME returns the base domain instead of wildcard
+                    // Use the domain as-is (it's already the base domain)
+                    &domain
                 } else {
                     // For non-wildcard, use domain as-is
                     &domain
