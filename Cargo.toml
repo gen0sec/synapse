@@ -4,7 +4,7 @@ authors = ["Gen0Sec <support@gen0sec.com>"]
 license = "ELv2"
 homepage = "https://gen0sec.com"
 repository = "https://github.com/gen0sec/synapse"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2024"
 keywords = ["bpf", "firewall", "reverse-proxy", "tls", "proxy", "proxy-protocol", "content-scanning", "threat-intelligence", "captcha", "hcaptcha", "recaptcha", "cloudflare-turnstile", "runtime"]
 readme = "README.md"
@@ -64,7 +64,7 @@ tokio-test = "0.4"
 x509-parser = "0.18"
 gethostname = "1.1.0"
 local-ip-address = "0.6.5"
-flate2 = "1.0"
+flate2 = "1.1"
 log = "0.4.28"
 env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
 jsonwebtoken = { version = "10.1", features = ["rust_crypto"] }
