@@ -60,6 +60,7 @@ impl UpstreamsDomainReader {
                 }
 
                 let is_wildcard = hostname.starts_with("*.");
+                let acme_wildcard = host_config.acme.as_ref().map(|a| a.wildcard).unwrap_or(false);
 
                 // Determine challenge type from ACME config or auto-detect
                 let challenge_type = if let Some(acme_config) = &host_config.acme {
@@ -77,11 +78,34 @@ impl UpstreamsDomainReader {
                     self.global_email.clone()
                 };
 
+                // Determine the domain to use for ACME request
+                // If wildcard is true and certificate is specified, use *.{certificate}
+                // Otherwise, use the hostname as-is
+                let acme_domain = if acme_wildcard && !is_wildcard {
+                    // Wildcard is set in config but hostname doesn't start with *.
+                    // Use certificate domain if available, otherwise use hostname
+                    if let Some(cert_domain) = &host_config.certificate {
+                        format!("*.{}", cert_domain)
+                    } else {
+                        // Extract base domain from hostname (remove subdomain)
+                        // For dev01.sub.example.com -> sub.example.com
+                        let parts: Vec<&str> = hostname.split('.').collect();
+                        if parts.len() >= 3 {
+                            // Take last 2 parts as base domain
+                            format!("*.{}.{}", parts[parts.len() - 2], parts[parts.len() - 1])
+                        } else {
+                            format!("*.{}", hostname)
+                        }
+                    }
+                } else {
+                    hostname.clone()
+                };
+
                 domains.push(DomainConfig {
-                    domain: hostname.clone(),
+                    domain: acme_domain,
                     email,
                     dns: challenge_type == "dns-01",
-                    wildcard: is_wildcard || host_config.acme.as_ref().map(|a| a.wildcard).unwrap_or(false),
+                    wildcard: is_wildcard || acme_wildcard,
                 });
             }
         }
